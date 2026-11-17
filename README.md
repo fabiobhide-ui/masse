@@ -9,15 +9,18 @@ Gewicht, Snapshots der Nährwerte usw.).
 ## Funktionen
 
 - **Heute:** Kalorien und Makros mit Restmengen, Schnellaktionen (Gewicht, Essen, Masseshake,
-  Training), Supplemente abhaken, Gewichtsverlauf, nächste Einheit
+  Training), Streaks (Protein-/Kalorienziel, Trainingswochen), abends Vorschläge zum Schließen der
+  Kalorienlücke, Wochenrückblick (Mo–Mi), Zielprognose, Supplemente, nächste Einheit
 - **Training:** Wochenplan (4× Gym, 3× Volleyball), Sätze mit Gewicht, Wiederholungen und RIR,
-  Aufwärmsätze, Pausentimer, Gewichtsvorschlag per Double Progression (erst nach Bestätigung),
-  Planeditor, Historie
-- **Ernährung:** eigener Lebensmittelkatalog, Favoriten, Masseshake, Barcode-Scanner (Kamera),
-  optional Online-Suche über Open Food Facts, Vortag übernehmen
-- **Fortschritt:** Gewicht mit 7-Tage-Mittel, Kalorien, Protein, Makroverteilung,
-  Trainingsvolumen, geschätztes 1RM, Körpermaße, Fortschrittsfotos mit Vergleich
-- **Mehr:** Ziele, Supplemente, Sicherung exportieren/importieren, CSV-Export
+  Aufwärmsätze, Pausentimer, Double Progression, Supersätze, Rekorde (🏆 beim Satz),
+  Übungsverlauf, Scheibenrechner, Sätze pro Muskelgruppe, Deload-Hinweis, Planeditor, Historie
+- **Ernährung:** eigener Lebensmittelkatalog, Favoriten, Gerichte aus mehreren Zutaten,
+  Mahlzeiten-Vorlagen, Protein pro Mahlzeit, Barcode-Scanner, optional Open Food Facts,
+  Vortag übernehmen
+- **Fortschritt:** Gewicht mit 7-Tage-Mittel und Prognose, Wochenrückblick, Kalender,
+  Bestleistungen, Kalorien, Protein, Makros, Volumen, geschätztes 1RM, Körpermaße, Fotos
+- **Mehr:** Ziele, Hell/Dunkel/Automatisch, Supplemente, Sicherung mit Erinnerung
+  (wöchentlich/14 Tage/aus), CSV-Export
 
 ## Auf dem iPhone installieren
 

@@ -1,5 +1,6 @@
 // Startdaten – übernommen aus Core/Seed.swift (deine Vorgaben, keine gemessenen Bestleistungen).
 import { SCHEMA_VERSION, macros, newFood, plan, exercise as ex, uid } from './core.js';
+import { guessMuscle } from './insights.js';
 
 export function defaultProfile() {
   return {
@@ -7,12 +8,19 @@ export function defaultProfile() {
     goals: macros(3400, 130, 495, 100),
     gymPerWeek: 4, volleyballPerWeek: 3, trainingGoal: 'Muskel- und Masseaufbau',
     onlineFoodEnabled: false, restSeconds: 120,
+    barWeight: 20, theme: 'auto', backupDays: 7,
   };
 }
 
 const supp = (name, dose, note = '') => ({ id: uid(), name, dose, note, paused: false });
 
 export function seedState() {
+  const state = buildSeed();
+  for (const p of state.plans) for (const e of p.exercises) { e.muscle = guessMuscle(e.name); e.supersetNext = false; }
+  return state;
+}
+
+function buildSeed() {
   const shake = newFood('Masseshake', macros(684, 39, 77, 26), {
     basisAmount: 1, unit: 'Portion', favorite: true, recipe: true,
     source: 'Deine Vorgabe · Richtwerte für das gesamte Rezept, bitte Etiketten prüfen',
@@ -84,6 +92,7 @@ export function seedState() {
     ],
     supplementLogs: [],
     photos: [], // nur Metadaten; Bilddaten liegen separat in IndexedDB
+    templates: [], // Mahlzeiten-Vorlagen
     lastBackup: null,
   };
 }

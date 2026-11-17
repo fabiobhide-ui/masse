@@ -4,6 +4,7 @@ import { seedState } from './seed.js';
 import * as DB from './db.js';
 import { lineChart, barChart, donut } from './charts.js';
 import { startScanner } from './scanner.js';
+import * as I from './insights.js';
 
 // ---------------------------------------------------------------- Hilfen
 const $ = (s, r = document) => r.querySelector(s);
@@ -140,7 +141,15 @@ const TABS = [
   ['home', 'Heute', 'home'], ['training', 'Training', 'dumbbell'], ['food', 'Ernährung', 'food'],
   ['progress', 'Fortschritt', 'chart'], ['more', 'Mehr', 'gear'],
 ];
+function applyTheme() {
+  const t = S?.profile?.theme ?? 'auto';
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  const light = t === 'light' || (t === 'auto' && matchMedia('(prefers-color-scheme: light)').matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', light ? '#f2f4f6' : '#090d12');
+}
+try { matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyTheme()); } catch { /* alt */ }
 function render() {
+  if (S) applyTheme();
   const main = $('#main');
   const top = main.scrollTop;
   if (loadError) { main.innerHTML = renderLoadError(); return; }
@@ -193,7 +202,7 @@ function renderHome() {
   <header class="hero"><div><p class="muted">${dateLong(now)}</p><h1>Dein Aufbau.<br>Dein Rhythmus.</h1></div><div class="logo">${icon('bolt')}</div></header>
   ${showInstall ? `<div class="card info"><b>Als App installieren</b><p>Tippe unten in Safari auf <b>Teilen</b> ${icon('share')} und dann auf <b>„Zum Home-Bildschirm“</b>. Danach startet MASSE wie eine App, auch offline.</p>
     <button type="button" class="link" data-act="hideInstall">Ausblenden</button></div>` : ''}
-  ${hasData && (backupDays == null || backupDays >= 14) ? `<div class="card info"><b>Sicherung empfohlen</b><p>${backupDays == null ? 'Du hast noch keine Sicherung erstellt.' : `Letzte Sicherung vor ${backupDays} Tagen.`} Deine Daten liegen nur auf diesem iPhone.</p>
+  ${hasData && p.backupDays > 0 && (backupDays == null || backupDays >= p.backupDays) ? `<div class="card info"><b>Sicherung empfohlen</b><p>${backupDays == null ? 'Du hast noch keine Sicherung erstellt.' : `Letzte Sicherung vor ${backupDays} Tagen.`} Deine Daten liegen nur auf diesem iPhone.</p>
     <button type="button" class="btn small" data-act="exportBackup">Jetzt sichern</button></div>` : ''}
   ${S.activeWorkout ? `<button type="button" class="card resume" data-act="openWorkout">${icon('play')}<div><b>${esc(S.activeWorkout.name)} läuft</b><span class="muted" data-since="${S.activeWorkout.started}"></span></div>${icon('chev')}</button>` : ''}
 
@@ -205,6 +214,7 @@ function renderHome() {
     ${metric('Kohlenhydrate', total.carbs, g.carbs, 'g', 'c-c')}
     ${metric('Fett', total.fat, g.fat, 'g', 'c-f')}
   </section>
+  ${renderStreaks()}
 
   <div class="quick">
     <button type="button" data-act="addWeight">${icon('scale')}<span>Gewicht</span></button>
@@ -213,6 +223,11 @@ function renderHome() {
     <button type="button" data-act="goTraining">${icon('dumbbell')}<span>Training</span></button>
   </div>
 
+  ${renderFillCard()}
+  ${(() => { const ws = C.addDays(I.weekStart(now), -7); const r = I.weeklyReview(S, ws);
+    return (now.getDay() >= 1 && now.getDay() <= 3) && lsGet('masse.review') !== C.dayKey(ws) && (r.loggedDays || r.gym || r.volleyball)
+      ? renderReview(r, { title: 'Dein Wochenrückblick', dismiss: true }) : ''; })()}
+
   ${renderSupplementsToday()}
 
   <section class="card">
@@ -220,6 +235,7 @@ function renderHome() {
     <div class="stats">${stat('Zuletzt', kg(last?.kg), last ? dateShort(last.date) : '')}${stat('7-Tage-Mittel', kg(C.weightMean(S.weights, now)))}${stat('Zur Vorwoche', signedKg(C.weightChange(S.weights, now)))}</div>
     <div class="bar thin"><i class="c-kcal" style="width:${progress * 100}%"></i></div>
     <p class="mini">Start ${kg(p.startKG)} · Ziel ${kg(p.goalKG)}${last ? ` · noch ${kg(Math.max(0, p.goalKG - last.kg))}` : ''}</p>
+    ${S.weights.length ? `<p class="mini">${forecastText()}</p>` : ''}
     ${S.weights.length ? '' : `<p class="mini">Noch keine Messung. Der Ausgangswert zählt nicht als Messung.</p>`}
   </section>
 
@@ -230,6 +246,98 @@ function renderHome() {
     ${lastWorkout ? `<p class="muted">Zuletzt: ${esc(lastWorkout.name)} · ${dateShort(lastWorkout.started)}</p>` : ''}
   </section>
   </div>`;
+}
+
+// ---------- Streaks, Prognose, Wochenrückblick, Kalender
+function dayStatus(d) {
+  const m = C.nutritionTotal(S.foodEntries, d), g = S.profile.goals;
+  const ws = S.workouts.filter(w => w.ended && C.sameDay(w.started, d));
+  return { kcal: m.calories >= g.calories * 0.95, protein: m.protein >= g.protein, logged: m.calories > 0, gym: ws.some(w => !w.volleyball), vb: ws.some(w => w.volleyball) };
+}
+function streaks() {
+  const now = new Date();
+  const protein = I.streak(d => dayStatus(d).protein, now);
+  const kcal = I.streak(d => dayStatus(d).kcal, now);
+  const planned = S.plans.filter(p => !p.volleyball).length;
+  let weeks = 0;
+  if (planned) {
+    const gymIn = ws => S.workouts.filter(w => w.ended && !w.volleyball && new Date(w.started) >= ws && new Date(w.started) < C.addDays(ws, 7)).length;
+    let ws = I.weekStart(now);
+    if (gymIn(ws) >= planned) weeks++;
+    ws = C.addDays(ws, -7);
+    while (weeks < 520 && gymIn(ws) >= planned) { weeks++; ws = C.addDays(ws, -7); }
+  }
+  return { protein, kcal, weeks };
+}
+function renderStreaks() {
+  const s = streaks();
+  const chips = [
+    s.protein >= 2 && `${icon('flame')} ${s.protein} Tage Proteinziel`,
+    s.kcal >= 2 && `${icon('flame')} ${s.kcal} Tage Kalorienziel`,
+    s.weeks >= 1 && `${icon('dumbbell')} ${s.weeks} ${s.weeks === 1 ? 'Woche' : 'Wochen'} alle Trainings`,
+  ].filter(Boolean);
+  return chips.length ? `<div class="chips streaks">${chips.map(c => `<span class="chip on">${c}</span>`).join('')}</div>` : '';
+}
+function forecastText() {
+  const f = I.forecast(S.weights, S.profile.goalKG);
+  if (!f) return 'Prognose: sobald du über mindestens eine Woche an 4 Tagen gewogen hast.';
+  if (f.reached) return `Zielgewicht erreicht – stark! Zeit für ein neues Ziel unter „Mehr“.`;
+  const rate = `${f.rate >= 0 ? '+' : '−'}${num(Math.abs(f.rate), 2)} kg pro Woche`;
+  if (!f.reachable) return `Trend der letzten 4 Wochen: ${rate}. So wird das Ziel nicht erreicht – etwas mehr essen hilft.`;
+  return `Trend: ${rate} → Ziel ${kg(S.profile.goalKG)} etwa <b>${f.date.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' })}</b>${f.rate > 0.5 ? ' (schneller als die empfohlenen 0,25–0,5 kg/Woche – evtl. mehr Fett als Muskeln)' : ''}.`;
+}
+function weekLabel(start) {
+  const end = C.addDays(start, 6);
+  return `${start.toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })}`;
+}
+function renderReview(r, { title, dismiss = false, nav = null } = {}) {
+  const ok = (a, b) => (a >= b ? 'ok-t' : '');
+  return `<section class="card review">
+    <div class="row between"><h3>${title}</h3>${dismiss ? `<button type="button" class="iconbtn sm" data-act="reviewDismiss" aria-label="Ausblenden">×</button>` : ''}</div>
+    ${nav ? `<div class="row between weeknav"><button type="button" class="iconbtn sm" data-act="reviewWeek" data-d="-7" aria-label="Vorherige Woche">‹</button><p class="mini">${weekLabel(r.start)}</p><button type="button" class="iconbtn sm" data-act="reviewWeek" data-d="7" aria-label="Nächste Woche" ${nav === 'both' ? '' : 'disabled'}>›</button></div>` : `<p class="mini">${weekLabel(r.start)}</p>`}
+    <div class="stats">
+      ${stat('Ø Kalorien', r.avgCalories != null ? num(r.avgCalories) : '—', `Ziel an ${r.calorieDays}/${r.loggedDays || 0} Tagen`)}
+      ${stat('Ø Protein', r.avgProtein != null ? num(r.avgProtein) + ' g' : '—', `Ziel an ${r.proteinDays}/${r.loggedDays || 0} Tagen`)}
+      ${stat('Gewicht', signedKg(r.weightChange), r.weight != null ? `Ø ${kg(r.weight)}` : '')}
+    </div>
+    <div class="stats">
+      ${stat('Gym', `<span class="${ok(r.gym, r.plannedGym)}">${r.gym}/${r.plannedGym}</span>`)}
+      ${stat('Volleyball', `<span class="${ok(r.volleyball, r.plannedVolleyball)}">${r.volleyball}/${r.plannedVolleyball}</span>`)}
+      ${stat('Rekorde', r.prs ? `🏆 ${r.prs}` : '0')}
+    </div>
+    <p class="mini">${reviewVerdict(r)}</p>
+  </section>`;
+}
+function reviewVerdict(r) {
+  if (!r.loggedDays && !r.gym && !r.volleyball) return 'Keine Einträge in dieser Woche.';
+  const parts = [];
+  if (r.loggedDays && r.avgCalories < S.profile.goals.calories * 0.9) parts.push(`Im Schnitt ${num(S.profile.goals.calories - r.avgCalories)} kcal unter dem Ziel – beim Aufbau ist das oft der Engpass.`);
+  if (r.loggedDays && r.avgProtein < S.profile.goals.protein * 0.9) parts.push('Protein etwas zu niedrig.');
+  if (r.gym < r.plannedGym) parts.push(`${r.plannedGym - r.gym} Gym-Einheit(en) ausgelassen.`);
+  if (r.weightChange != null && r.weightChange <= 0 && r.loggedDays >= 4) parts.push('Das Gewicht ist nicht gestiegen.');
+  return parts.length ? parts.join(' ') : 'Starke Woche – Ernährung und Training passen. Weiter so!';
+}
+function renderCalendar() {
+  const month = ui.calMonth ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  ui.calMonth = month;
+  const first = new Date(month.getFullYear(), month.getMonth(), 1);
+  const daysIn = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const lead = (first.getDay() + 6) % 7;
+  const today = C.startOfDay(new Date());
+  let cells = Array.from({ length: lead }, () => '<span></span>').join('');
+  for (let d = 1; d <= daysIn; d++) {
+    const date = new Date(month.getFullYear(), month.getMonth(), d);
+    if (date > today) { cells += `<span class="cd future">${d}</span>`; continue; }
+    const st = dayStatus(date);
+    cells += `<button type="button" class="cd ${C.sameDay(date, today) ? 'today' : ''} ${st.kcal ? 'k' : ''}" data-act="calDay" data-d="${C.dayKey(date)}" aria-label="${date.toLocaleDateString('de-DE')}">
+      <span>${d}</span><i>${st.gym ? '<b class="g"></b>' : ''}${st.vb ? '<b class="v"></b>' : ''}${st.protein ? '<b class="p"></b>' : ''}</i></button>`;
+  }
+  const isCurrent = month.getFullYear() === today.getFullYear() && month.getMonth() === today.getMonth();
+  return `<section class="card"><div class="row between"><h3>${icon('calendar')} ${month.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' })}</h3>
+    <span class="row"><button type="button" class="iconbtn sm" data-act="calMonth" data-d="-1" aria-label="Vorheriger Monat">‹</button><button type="button" class="iconbtn sm" data-act="calMonth" data-d="1" aria-label="Nächster Monat" ${isCurrent ? 'disabled' : ''}>›</button></span></div>
+    <div class="cal">${['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map(x => `<span class="ch">${x}</span>`).join('')}${cells}</div>
+    <div class="legend"><span class="lg cal-k">Kalorienziel</span><span class="lg cal-p">Proteinziel</span><span class="lg cal-g">Gym</span><span class="lg cal-v">Volleyball</span></div>
+    <p class="mini">Tag antippen zeigt die Ernährung dieses Tages.</p></section>`;
 }
 
 function renderSupplementsToday() {
@@ -243,24 +351,49 @@ function renderSupplementsToday() {
 }
 
 // ================================================================ TRAINING
+function weekKey(d = new Date()) { return C.dayKey(I.weekStart(d)); }
+function plannedMuscleSets() {
+  const out = Object.fromEntries(I.MUSCLES.map(m => [m, 0]));
+  for (const p of S.plans) if (!p.volleyball) for (const e of p.exercises) out[I.muscleOf(e)] += e.sets;
+  return out;
+}
+function renderMuscleWeek() {
+  const start = I.weekStart(new Date());
+  const done = I.muscleSets(S.workouts, start, C.addDays(start, 7), S.activeWorkout);
+  const planned = plannedMuscleSets();
+  const rows = I.MUSCLES.filter(m => done[m] || planned[m]);
+  const max = Math.max(20, ...rows.map(m => Math.max(done[m], planned[m])));
+  return `<section class="card"><h3>Sätze pro Muskelgruppe · diese Woche</h3>
+    ${rows.map(m => `<div class="mg"><span>${m}</span><div class="mgbar"><i class="c-kcal" style="width:${(done[m] / max) * 100}%"></i><b style="left:${(planned[m] / max) * 100}%" title="geplant"></b></div><span class="tnum">${done[m]}<small>/${planned[m]}</small></span></div>`).join('')}
+    <p class="mini">Abgeschlossene Arbeitssätze seit Montag / laut Plan. Für Muskelaufbau gelten grob 10–20 Sätze pro Muskel und Woche als guter Bereich.</p></section>`;
+}
 function renderTraining() {
   const plans = [...S.plans].sort((a, b) => mondayOrder(a.weekday) - mondayOrder(b.weekday) || a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
   const history = [...S.workouts].sort((a, b) => new Date(b.started) - new Date(a.started));
+  const deload = I.deloadCheck(S.workouts);
   return `<div class="pad"><h1 class="title">Training</h1>
   ${S.activeWorkout ? `<button type="button" class="card resume" data-act="openWorkout">${icon('play')}<div><b>${esc(S.activeWorkout.name)} fortsetzen</b><span class="muted" data-since="${S.activeWorkout.started}"></span></div>${icon('chev')}</button>` : ''}
+  ${deload.suggested && lsGet('masse.deload') !== weekKey() ? `<section class="card info"><b>Zeit für eine Deload-Woche?</b>
+    <p>Bei ${deload.stagnant.length} von ${deload.total} Übungen geht es seit etwa drei Wochen nicht mehr voran (${esc(deload.stagnant.slice(0, 3).join(', '))}${deload.stagnant.length > 3 ? ' …' : ''}). Eine leichtere Woche hilft oft: Gewichte um ca. 10 % senken und je Übung einen Satz weniger. Danach geht es meist wieder aufwärts.</p>
+    <button type="button" class="btn small ghost" data-act="deloadDismiss">Verstanden</button></section>` : ''}
+  <div class="quick three">
+    <button type="button" data-act="showRecords">${icon('trophy')}<span>Rekorde</span></button>
+    <button type="button" data-act="plateCalc">${icon('plates')}<span>Scheiben</span></button>
+    <button type="button" data-act="newPlan">${icon('plus')}<span>Neuer Plan</span></button>
+  </div>
+  ${renderMuscleWeek()}
   <h2 class="sec">Deine Woche</h2>
   ${plans.map(p => `<section class="card plan">
     <div class="row between"><h3>${icon(p.volleyball ? 'ball' : 'dumbbell')} ${esc(p.name)}</h3>
       <button type="button" class="iconbtn" data-act="editPlan" data-id="${p.id}" aria-label="${esc(p.name)} bearbeiten">${icon('edit')}</button></div>
     <p class="mini">${weekdayName(p.weekday)} · ${hhmm(p.hour, p.minute)} · ${p.durationMinutes} min${p.flexible ? ' · flexibel' : ''}</p>
-    ${p.volleyball ? '' : `<p class="mini">${p.exercises.length} Übungen · ${p.exercises.reduce((n, e) => n + e.sets, 0)} Arbeitssätze</p>`}
+    ${p.volleyball ? '' : `<p class="mini">${p.exercises.length} Übungen · ${p.exercises.reduce((n, e) => n + e.sets, 0)} Arbeitssätze${p.exercises.some(e => e.supersetNext) ? ' · mit Supersätzen' : ''}</p>`}
     <button type="button" class="btn ${S.activeWorkout ? '' : 'primary'} small" data-act="startWorkout" data-id="${p.id}" ${S.activeWorkout ? 'disabled' : ''}>${icon('play')} Training starten</button>
   </section>`).join('')}
-  <button type="button" class="btn block" data-act="newPlan">${icon('plus')} Eigener Trainingsplan</button>
   <p class="mini">Startlasten sind unverbindliche Vorgaben. Maschinenanzeigen sind nur am gleichen Gerät vergleichbar.</p>
   <h2 class="sec">Historie</h2>
-  ${history.length ? `<div class="list">${history.map(w => `<button type="button" class="li" data-act="showWorkout" data-id="${w.id}">
-    <div><b>${esc(w.name)}</b><span class="mini">${dateTime(w.started)} · ${Math.round(C.workoutDuration(w) / 60)} min${w.volleyball ? '' : ` · ${num(C.volume(w))} kg Volumen`}</span></div>${icon('chev')}</button>`).join('')}</div>`
+  ${history.length ? `<div class="list">${history.map(w => { const prs = I.prSetIds(w, S.workouts).size; return `<button type="button" class="li" data-act="showWorkout" data-id="${w.id}">
+    <div><b>${esc(w.name)}${prs ? ` <span class="pr">${icon('trophy')} ${prs}</span>` : ''}</b><span class="mini">${dateTime(w.started)} · ${Math.round(C.workoutDuration(w) / 60)} min${w.volleyball ? '' : ` · ${num(C.volume(w))} kg Volumen`}</span></div>${icon('chev')}</button>`; }).join('')}</div>`
     : empty('Deine abgeschlossenen Einheiten erscheinen hier.')}
   </div>`;
 }
@@ -268,6 +401,17 @@ function renderTraining() {
 function workoutBody() {
   const w = S.activeWorkout;
   if (!w) return `<div class="center pad"><p>${icon('check')} Training gespeichert.</p><p class="muted">Du findest die Einheit in der Historie.</p></div>`;
+  const prs = I.prSetIds(w, S.workouts);
+  let cards = '';
+  for (let i = 0; i < w.exercises.length; i++) {
+    if (w.exercises[i].exercise.supersetNext && i + 1 < w.exercises.length) {
+      let group = '';
+      const first = i;
+      while (i < w.exercises.length - 1 && w.exercises[i].exercise.supersetNext) { group += exerciseCard(w.exercises[i], i, prs); i++; }
+      group += exerciseCard(w.exercises[i], i, prs);
+      cards += `<div class="superset"><p class="ss-label">${icon('link')} Supersatz · ${i - first + 1} Übungen im Wechsel, Pause erst nach der letzten</p>${group}</div>`;
+    } else cards += exerciseCard(w.exercises[i], i, prs);
+  }
   return `<div class="sticky-top">
       <div class="row between"><span>${icon('clock')} Dauer <b class="tnum" data-since="${w.started}"></b></span>
       <span class="tnum" data-rest-label></span></div>
@@ -275,14 +419,15 @@ function workoutBody() {
         <div class="row"><button type="button" class="btn small" data-act="restAdd">+30 s</button><button type="button" class="btn small ghost" data-act="restStop">Pause beenden</button></div></div>
     </div>
     ${w.volleyball ? `<div class="card"><p>Volleyball läuft. Beim Abschließen wird die Dauer gespeichert.</p></div>` : ''}
-    ${w.exercises.map((item, i) => exerciseCard(item, i)).join('')}
+    ${prs.size ? `<div class="card pr-card">${icon('trophy')} <b>${prs.size} ${prs.size === 1 ? 'neuer Rekord' : 'neue Rekorde'} in dieser Einheit!</b></div>` : ''}
+    ${cards}
     <section class="card"><h3>Trainingsnotiz</h3>
       <textarea rows="3" data-change="workoutNote" placeholder="Wie lief es?">${esc(w.note)}</textarea></section>
     <button type="button" class="btn primary block" data-act="finishWorkout">${icon('check')} Training abschließen</button>
     <button type="button" class="btn danger ghost block" data-act="discardWorkout">Training verwerfen</button>`;
 }
 
-function exerciseCard(item, i) {
+function exerciseCard(item, i, prs = new Set()) {
   const ex = item.exercise;
   const prev = C.previousPerformance(ex.id, S.workouts);
   const sugg = prev ? C.suggestion(prev, ex.increment) : null;
@@ -290,26 +435,80 @@ function exerciseCard(item, i) {
   const unit = ex.timed ? 'Sek.' : 'Wdh.';
   const wLabel = ex.basis === 'perHand' ? 'kg/Hand' : ex.basis === 'bodyweight' ? 'kg Zusatz' : 'kg';
   const alreadyApplied = sugg != null && item.sets.filter(s => !s.warmup && !s.completed).every(s => s.weight === sugg);
+  const best = I.bestBefore(ex.id, S.workouts);
   return `<section class="card ex ${doneWork >= ex.sets ? 'done' : ''}">
     <div class="row between"><h3>${esc(ex.name)}</h3><span class="pill">${doneWork}/${ex.sets}</span></div>
-    <p class="mini">Ziel ${ex.sets} × ${ex.low}–${ex.high} ${unit} · ${C.LOAD_BASIS[ex.basis]}</p>
+    <p class="mini">${esc(I.muscleOf(ex))} · Ziel ${ex.sets} × ${ex.low}–${ex.high} ${unit} · ${C.LOAD_BASIS[ex.basis]}${best ? ` · Rekord e1RM ${num(best, 1)} kg` : ''}</p>
     ${ex.note ? `<p class="mini note">${esc(ex.note)}</p>` : ''}
     ${prev ? `<p class="mini">Letztes Mal: ${prev.sets.filter(s => s.completed && !s.warmup).map(s => `${s.weight != null ? numFlex(s.weight) : '—'}×${s.reps}`).join(' · ') || '—'}</p>` : ''}
     ${sugg != null && !alreadyApplied ? `<div class="suggest">${icon('up')} <span>Alle Sätze am oberen Ziel geschafft – <b>${numFlex(sugg)} kg</b> vorgeschlagen.</span>
       <button type="button" class="btn small primary" data-act="applySugg" data-ex="${i}" data-w="${sugg}">Übernehmen</button></div>` : ''}
     <div class="sets"><div class="sh"><span>Satz</span><span>${wLabel}</span><span>${unit}</span><span>RIR</span><span></span></div>
-    ${item.sets.map((s, j) => `<div class="set ${s.completed ? 'ok' : ''} ${s.warmup ? 'warm' : ''}">
-      <button type="button" class="sn" data-act="toggleWarm" data-ex="${i}" data-set="${j}" aria-label="Aufwärmsatz umschalten">${s.warmup ? 'A' : j + 1 - item.sets.slice(0, j).filter(x => x.warmup).length}</button>
+    ${item.sets.map((s, j) => `<div class="set ${s.completed ? 'ok' : ''} ${s.warmup ? 'warm' : ''} ${prs.has(s.id) ? 'is-pr' : ''}">
+      <button type="button" class="sn" data-act="toggleWarm" data-ex="${i}" data-set="${j}" aria-label="Aufwärmsatz umschalten">${prs.has(s.id) ? icon('trophy') : s.warmup ? 'A' : j + 1 - item.sets.slice(0, j).filter(x => x.warmup).length}</button>
       <input inputmode="decimal" enterkeyhint="next" value="${inVal(s.weight)}" placeholder="–" data-change="setField" data-field="weight" data-ex="${i}" data-set="${j}" aria-label="Gewicht">
       <input inputmode="numeric" enterkeyhint="done" value="${s.reps}" data-change="setField" data-field="reps" data-ex="${i}" data-set="${j}" aria-label="${unit}">
       <select data-change="setField" data-field="rir" data-ex="${i}" data-set="${j}" aria-label="RIR"><option value="">–</option>${[0, 1, 2, 3, 4, 5].map(r => `<option ${s.rir === r ? 'selected' : ''}>${r}</option>`).join('')}</select>
       <button type="button" class="ck" data-act="toggleSet" data-ex="${i}" data-set="${j}" aria-label="Satz abhaken">${icon('check')}</button>
     </div>`).join('')}</div>
-    <div class="row"><button type="button" class="btn small ghost" data-act="addSet" data-ex="${i}">${icon('plus')} Satz</button>
-      ${item.sets.length > 1 ? `<button type="button" class="btn small ghost" data-act="removeSet" data-ex="${i}">Letzten Satz entfernen</button>` : ''}</div>
+    <div class="row wrap"><button type="button" class="btn small ghost" data-act="addSet" data-ex="${i}">${icon('plus')} Satz</button>
+      ${item.sets.length > 1 ? `<button type="button" class="btn small ghost" data-act="removeSet" data-ex="${i}">${icon('minus')} Satz</button>` : ''}
+      <button type="button" class="btn small ghost" data-act="exHistory" data-id="${ex.id}" data-name="${esc(ex.name)}">${icon('clock')} Verlauf</button>
+      ${ex.basis === 'total' ? `<button type="button" class="btn small ghost" data-act="plateCalc" data-ex="${i}">${icon('plates')} Scheiben</button>` : ''}</div>
     <input class="exnote" value="${esc(item.note)}" placeholder="Notiz zur Übung" data-change="exNote" data-ex="${i}">
-    <p class="mini">Tipp: Satznummer antippen markiert einen Aufwärmsatz (zählt nicht ins Volumen).</p>
+    ${i === 0 ? '<p class="mini">Tipp: Satznummer antippen markiert einen Aufwärmsatz (zählt nicht ins Volumen).</p>' : ''}
   </section>`;
+}
+
+function exerciseHistoryBody(id) {
+  const hist = I.exerciseHistory(id, S.workouts, 5);
+  const rec = I.records(S.workouts).find(r => r.id === id);
+  if (!hist.length) return empty('Noch keine abgeschlossenen Durchgänge dieser Übung.');
+  return `${rec ? `<div class="card pr-card">${icon('trophy')} <div><b>Rekord: ${numFlex(rec.weight)} kg × ${rec.reps}</b><span class="mini">Geschätztes 1RM ${num(rec.e1rm, 1)} kg · ${dateShort(rec.date)}</span></div></div>` : ''}
+  ${hist.map(h => { const b = C.best1RM(h.item); return `<section class="card"><div class="row between"><b>${dateLong(h.date)}</b>${b ? `<span class="pill">e1RM ${num(b, 1)}</span>` : ''}</div>
+    <p class="mini">${h.item.sets.filter(s => s.completed).map(s => `${s.warmup ? 'A: ' : ''}${s.weight != null ? numFlex(s.weight) : '—'} × ${s.reps}${s.rir != null ? ` (RIR ${s.rir})` : ''}`).join(' · ')}</p>
+    ${h.item.note ? `<p class="mini note">${esc(h.item.note)}</p>` : ''}</section>`; }).join('')}
+  <p class="mini">Die letzten ${hist.length} Durchgänge, neueste zuerst.</p>`;
+}
+
+function recordsBody() {
+  const recs = I.records(S.workouts);
+  if (!recs.length) return empty('Noch keine Rekorde. Schließe Sätze mit Gewicht ab, dann erscheinen hier deine Bestleistungen.');
+  let html = '', group = null;
+  for (const r of recs) {
+    if (r.muscle !== group) { if (group) html += '</div>'; group = r.muscle; html += `<h3 class="sec">${esc(group)}</h3><div class="list">`; }
+    html += `<button type="button" class="li" data-act="exHistory" data-id="${r.id}" data-name="${esc(r.name)}"><div><b>${esc(r.name)}</b><span class="mini">${dateShort(r.date)} · e1RM ${num(r.e1rm, 1)} kg</span></div><div class="r"><b class="tnum">${numFlex(r.weight)} kg × ${r.reps}</b><span class="mini">${r.basis === 'perHand' ? 'je Hand' : r.basis === 'machine' ? 'Maschine' : ''}</span></div></button>`;
+  }
+  return html + '</div><p class="mini">Bestwert je Übung nach geschätztem 1RM (Epley). Antippen zeigt den Verlauf.</p>';
+}
+
+function plateSheet(weight) {
+  const bar = S.profile.barWeight ?? 20;
+  openSheet({
+    kind: 'plates', title: 'Scheibenrechner', closeLabel: 'Fertig',
+    body: () => `<form class="form" data-form="noop">
+      <div class="grid2"><label>Gesamtgewicht (kg)<input name="total" inputmode="decimal" value="${inVal(weight ?? 60)}" data-input="plates"></label>
+      <label>Stange (kg)<input name="bar" inputmode="decimal" value="${inVal(bar)}" data-input="plates"></label></div>
+      <div id="plate-out" class="card flat"></div>
+      <p class="mini">Scheiben: 25 · 20 · 15 · 10 · 5 · 2,5 · 1,25 kg. Das Stangengewicht wird gespeichert.</p></form>`,
+    onOpen: node => updatePlates(node.querySelector('form')),
+    onClose: () => {
+      const b = parseNum(document.querySelector('#plate-out')?.dataset.bar);
+      if (Number.isFinite(b) && b !== S.profile.barWeight) run(() => commit(s => { s.profile.barWeight = b; }, { render: false }));
+    },
+  });
+}
+const PLATE_CLS = { 25: 'p25', 20: 'p20', 15: 'p15', 10: 'p10', 5: 'p5', 2.5: 'p2', 1.25: 'p1' };
+function updatePlates(form) {
+  const out = form.querySelector('#plate-out');
+  const total = parseNum(form.total.value), bar = parseNum(form.bar.value);
+  try {
+    const r = I.plates(total, bar);
+    out.dataset.bar = String(bar);
+    out.innerHTML = `<p><b>Je Seite: ${numFlex(r.perSide)} kg</b></p>
+      <div class="barbell"><span class="bar-end"></span>${r.plates.map(p => `<span class="plate ${PLATE_CLS[p]}">${numFlex(p)}</span>`).join('') || '<span class="mini">keine Scheiben</span>'}<span class="bar-shaft"></span></div>
+      <p class="mini">${r.plates.length ? r.plates.map(numFlex).join(' + ') + ' kg pro Seite' : 'Nur die Stange.'}${r.rest > 0 ? ` · ${numFlex(r.rest)} kg pro Seite lassen sich nicht exakt stecken` : ''}</p>`;
+  } catch (e) { out.innerHTML = `<p class="mini">${esc(e.message)}</p>`; }
 }
 
 function openWorkout() {
@@ -322,10 +521,10 @@ function workoutDetailBody(id) {
   if (!w) return empty('Nicht gefunden.');
   return `<p class="muted">${dateTime(w.started)} · ${Math.round(C.workoutDuration(w) / 60)} min${w.volleyball ? '' : ` · ${num(C.volume(w))} kg Volumen`}</p>
   ${w.note ? `<div class="card"><p>${esc(w.note)}</p></div>` : ''}
-  ${w.exercises.map(item => `<section class="card"><h3>${esc(item.exercise.name)}</h3>
-    ${item.sets.map((s, j) => `<p class="mini">${s.warmup ? 'Aufwärmen' : `Satz ${j + 1}`}: ${s.weight != null ? numFlex(s.weight) + ' kg' : '—'} × ${s.reps} ${item.exercise.timed ? 'Sek.' : 'Wdh.'}${s.rir != null ? ` · RIR ${s.rir}` : ''}${s.completed ? '' : ' · <i>nicht abgeschlossen</i>'}</p>`).join('')}
+  ${(() => { const prs = I.prSetIds(w, S.workouts); return w.exercises.map(item => `<section class="card"><h3>${esc(item.exercise.name)}</h3>
+    ${item.sets.map((s, j) => `<p class="mini">${prs.has(s.id) ? '🏆 ' : ''}${s.warmup ? 'Aufwärmen' : `Satz ${j + 1}`}: ${s.weight != null ? numFlex(s.weight) + ' kg' : '—'} × ${s.reps} ${item.exercise.timed ? 'Sek.' : 'Wdh.'}${s.rir != null ? ` · RIR ${s.rir}` : ''}${s.completed ? '' : ' · <i>nicht abgeschlossen</i>'}</p>`).join('')}
     ${C.best1RM(item) ? `<p class="mini">Geschätztes 1RM: ${num(C.best1RM(item), 1)} kg</p>` : ''}
-    ${item.note ? `<p class="mini note">${esc(item.note)}</p>` : ''}</section>`).join('')}
+    ${item.note ? `<p class="mini note">${esc(item.note)}</p>` : ''}</section>`).join(''); })()}
   <button type="button" class="btn danger ghost block" data-act="deleteWorkout" data-id="${w.id}">Einheit löschen</button>`;
 }
 
@@ -355,7 +554,9 @@ function planEditorBody() {
       <label>Steigerung (kg)<input inputmode="decimal" value="${inVal(e.increment)}" data-input="plan" data-path="exercises.${i}.increment" data-type="num"></label></div>
       <div class="grid2"><label>Lastangabe<select data-input="plan" data-path="exercises.${i}.basis">${Object.entries(C.LOAD_BASIS).map(([k, v]) => `<option value="${k}" ${e.basis === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
       <label class="check"><input type="checkbox" ${e.timed ? 'checked' : ''} data-input="plan" data-path="exercises.${i}.timed" data-type="bool"> In Sekunden</label></div>
+      <label>Muskelgruppe<select data-input="plan" data-path="exercises.${i}.muscle">${I.MUSCLES.map(m => `<option ${I.muscleOf(e) === m ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
       <label>Hinweis<input value="${esc(e.note)}" data-input="plan" data-path="exercises.${i}.note"></label>
+      ${i < p.exercises.length - 1 ? `<label class="check"><input type="checkbox" ${e.supersetNext ? 'checked' : ''} data-input="plan" data-path="exercises.${i}.supersetNext" data-type="bool"> Supersatz mit der nächsten Übung</label>` : ''}
     </fieldset>`).join('')}
     <button type="button" class="btn block" data-act="exAdd">${icon('plus')} Übung hinzufügen</button>`}
     <p class="mini">Neuer Name, andere Lastangabe oder Zeitmessung gelten als neue Übung, damit alte Leistungen nicht vermischt werden.</p>
@@ -383,6 +584,8 @@ function renderFood() {
   const g = S.profile.goals;
   const groups = MEALS.concat([...new Set(entries.map(e => e.meal))].filter(m => !MEALS.includes(m)));
   const yesterdayCount = S.foodEntries.filter(e => C.sameDay(e.date, C.addDays(d, -1))).length;
+  const mealSums = groups.map(m => [m, entries.filter(e => e.meal === m).reduce((s, e) => C.addMacros(s, C.entryTotals(e)), C.macros())]).filter(([m]) => entries.some(e => e.meal === m));
+  const PGOAL = 30;
   return `<div class="pad"><h1 class="title">Ernährung</h1>
   <div class="daynav"><button type="button" class="iconbtn" data-act="foodDay" data-d="-1" aria-label="Vorheriger Tag">‹</button>
     <b>${isToday ? 'Heute' : C.sameDay(d, C.addDays(new Date(), -1)) ? 'Gestern' : dateLong(d)}</b>
@@ -393,22 +596,104 @@ function renderFood() {
       ${[['Protein', 'protein', 'c-p'], ['Kohlenh.', 'carbs', 'c-c'], ['Fett', 'fat', 'c-f']].map(([l, k, c]) => `<div><span class="mini">${l}</span><b class="tnum">${num(t[k])}<small>/${num(g[k])} g</small></b><div class="bar thin"><i class="${c}" style="width:${Math.min(100, (t[k] / g[k]) * 100)}%"></i></div></div>`).join('')}
     </div>
   </section>
-  <div class="quick three">
+  <div class="quick four">
     <button type="button" data-act="openLibrary">${icon('plus')}<span>Lebensmittel</span></button>
     <button type="button" data-act="scan">${icon('barcode')}<span>Barcode</span></button>
+    <button type="button" data-act="newDish">${icon('pot')}<span>Gericht</span></button>
     <button type="button" data-act="quickShake">${icon('cup')}<span>Shake</span></button>
   </div>
+  ${S.templates.length ? `<div class="tpl-row"><span class="mini">${icon('bookmark')} Vorlagen</span><div class="chips">${S.templates.map(tp => `<button type="button" class="chip" data-act="openTemplate" data-id="${tp.id}">${esc(tp.name)}</button>`).join('')}</div></div>` : ''}
   ${entries.length ? groups.map(m => {
     const list = entries.filter(e => e.meal === m);
     if (!list.length) return '';
     const sum = list.reduce((s, e) => C.addMacros(s, C.entryTotals(e)), C.macros());
-    return `<h2 class="sec row between"><span>${esc(m)}</span><small class="muted">${num(sum.calories)} kcal · ${num(sum.protein)} g P</small></h2>
+    return `<h2 class="sec row between"><span>${esc(m)}</span><span class="row"><small class="muted">${num(sum.calories)} kcal · <b class="${sum.protein >= PGOAL ? 'ok-t' : ''}">${num(sum.protein)} g P</b></small>
+      <button type="button" class="iconbtn sm" data-act="saveTemplate" data-meal="${esc(m)}" aria-label="${esc(m)} als Vorlage speichern">${icon('bookmark')}</button></span></h2>
     <div class="list">${list.map(e => { const tt = C.entryTotals(e); return `<button type="button" class="li" data-act="editEntry" data-id="${e.id}">
       <div><b>${esc(e.food.name)}</b><span class="mini">${numFlex(e.amount)} ${esc(e.food.unit)} · ${time(e.date)}</span></div>
       <div class="r"><b class="tnum">${num(tt.calories)}</b><span class="mini">${num(tt.protein)} P · ${num(tt.carbs)} K · ${num(tt.fat)} F</span></div></button>`; }).join('')}</div>`;
   }).join('') : empty('Noch nichts eingetragen.')}
+  ${mealSums.length >= 2 ? `<section class="card"><h3>Protein pro Mahlzeit</h3>
+    ${mealSums.map(([m, s]) => `<div class="mg"><span>${esc(m)}</span><div class="mgbar"><i class="c-p" style="width:${Math.min(100, (s.protein / 50) * 100)}%"></i><b style="left:${(PGOAL / 50) * 100}%"></b></div><span class="tnum">${num(s.protein)} g</span></div>`).join('')}
+    <p class="mini">${mealSums.filter(([, s]) => s.protein >= PGOAL).length} von ${mealSums.length} Mahlzeiten mit mindestens ${PGOAL} g Protein. Gut verteiltes Protein (ca. 30–40 g je Mahlzeit) unterstützt den Muskelaufbau besser als eine große Portion.</p></section>` : ''}
   ${yesterdayCount ? `<button type="button" class="btn block ghost" data-act="copyYesterday">${icon('copy')} Vortag übernehmen (${yesterdayCount} Einträge)</button>` : ''}
   </div>`;
+}
+
+// ---------- Gerichte aus Zutaten
+let dishDraft = null;
+function dishBody() {
+  const d = dishDraft;
+  let preview = '';
+  try {
+    const m = I.dishMacros(d.components, d.portions);
+    preview = `<div class="macros4">${[['kcal', m.calories, 0], ['Protein', m.protein, 1], ['Kohlenh.', m.carbs, 1], ['Fett', m.fat, 1]].map(([l, v, dd]) => `<div><b class="tnum">${num(v, dd)}</b><span class="mini">${l}</span></div>`).join('')}</div><p class="mini center">je Portion</p>`;
+  } catch (e) { preview = `<p class="mini center">${esc(e.message)}</p>`; }
+  return `<form class="form" data-form="saveDish">
+    <div class="grid2"><label>Name<input value="${esc(d.name)}" data-input="dish" data-path="name" placeholder="z. B. Reis mit Hähnchen" required></label>
+    <label>Portionen<input inputmode="decimal" value="${inVal(d.portions)}" data-input="dish" data-path="portions"></label></div>
+    <h3 class="sec">Zutaten</h3>
+    ${d.components.length ? `<div class="list">${d.components.map((c, i) => `<div class="li"><div><b>${esc(c.food.name)}</b><span class="mini">${num(C.portion(c.food, c.amount).calories)} kcal · ${num(C.portion(c.food, c.amount).protein, 1)} g P</span></div>
+      <input class="amt" inputmode="decimal" value="${inVal(c.amount)}" data-input="dish" data-path="amount.${i}" aria-label="Menge"><span class="mini">${esc(c.food.unit)}</span>
+      <button type="button" class="iconbtn danger sm" data-act="dishRemove" data-i="${i}" aria-label="Zutat entfernen">${icon('trash')}</button></div>`).join('')}</div>` : '<p class="muted center">Noch keine Zutaten.</p>'}
+    <div class="searchbar"><input type="search" id="dish-q" placeholder="Zutat aus deinem Katalog suchen …" data-input="dishSearch" autocomplete="off"></div>
+    <div class="list" id="dish-results"></div>
+    <div class="card flat" id="dish-preview">${preview}</div>
+    <p class="mini">Fehlt eine Zutat? Lege sie zuerst unter „Lebensmittel“ an (oder scanne sie) und füge sie dann hier hinzu.</p>
+    <button class="btn primary block">Gericht speichern</button>
+    ${d.id ? `<button type="button" class="btn danger ghost block" data-act="deleteFood" data-id="${d.id}">Gericht löschen</button>` : ''}
+  </form>`;
+}
+function openDish(food = null) {
+  dishDraft = food?.dish
+    ? { id: food.id, name: food.name, portions: food.dish.portions, components: structuredClone(food.dish.components) }
+    : { id: null, name: '', portions: 1, components: [] };
+  openSheet({ kind: 'dish', title: food ? 'Gericht bearbeiten' : 'Neues Gericht', closeLabel: 'Abbrechen', body: dishBody });
+}
+function refreshDishPreview() {
+  const out = $('#dish-preview');
+  if (!out) return;
+  try {
+    const m = I.dishMacros(dishDraft.components, dishDraft.portions);
+    out.innerHTML = `<div class="macros4">${[['kcal', m.calories, 0], ['Protein', m.protein, 1], ['Kohlenh.', m.carbs, 1], ['Fett', m.fat, 1]].map(([l, v, dd]) => `<div><b class="tnum">${num(v, dd)}</b><span class="mini">${l}</span></div>`).join('')}</div><p class="mini center">je Portion</p>`;
+  } catch (e) { out.innerHTML = `<p class="mini center">${esc(e.message)}</p>`; }
+}
+
+// ---------- Mahlzeiten-Vorlagen
+function templateSheet(tp) {
+  const total = tp.items.reduce((s, it) => C.addMacros(s, C.entryTotals(it)), C.macros());
+  openSheet({
+    kind: 'template', title: tp.name,
+    body: () => `<div class="list">${tp.items.map(it => `<div class="li"><div><b>${esc(it.food.name)}</b><span class="mini">${numFlex(it.amount)} ${esc(it.food.unit)}</span></div><div class="r"><b class="tnum">${num(C.entryTotals(it).calories)}</b><span class="mini">${num(C.entryTotals(it).protein)} g P</span></div></div>`).join('')}</div>
+      <p class="mini">Zusammen ${num(total.calories)} kcal · ${num(total.protein)} g Protein · Mahlzeit „${esc(tp.meal)}“</p>
+      <button type="button" class="btn primary block" data-act="applyTemplate" data-id="${tp.id}">${icon('plus')} ${C.sameDay(ui.foodDay, new Date()) ? 'Jetzt eintragen' : 'Für ' + dateShort(ui.foodDay) + ' eintragen'}</button>
+      <button type="button" class="btn danger ghost block" data-act="deleteTemplate" data-id="${tp.id}">Vorlage löschen</button>`,
+  });
+}
+
+// ---------- Kalorienlücke
+function fillCandidates() {
+  const lastAmount = new Map();
+  const recent = [];
+  for (const e of [...S.foodEntries].sort((a, b) => new Date(b.date) - new Date(a.date))) {
+    if (!lastAmount.has(e.food.id)) { lastAmount.set(e.food.id, e.amount); recent.push(e.food.id); }
+  }
+  const ids = new Set([...S.foods.filter(f => f.favorite || f.recipe).map(f => f.id), ...recent.slice(0, 10)]);
+  return [...ids].map(id => S.foods.find(f => f.id === id)).filter(Boolean)
+    .map(f => ({ food: f, amount: lastAmount.get(f.id) ?? f.basisAmount }));
+}
+function renderFillCard() {
+  const now = new Date();
+  if (now.getHours() < 14) return '';
+  const rem = C.remaining(C.nutritionTotal(S.foodEntries, now), S.profile.goals);
+  if (rem.calories < 300) return '';
+  ui.fillOpts = I.suggestFill(rem, fillCandidates());
+  return `<section class="card info"><h3>${icon('bulb')} Noch ${num(rem.calories)} kcal${rem.protein >= 5 ? ` und ${num(rem.protein)} g Protein` : ''} offen</h3>
+    ${ui.fillOpts.length ? `<p class="mini">Vorschläge aus deinen Favoriten und zuletzt gegessenen Lebensmitteln:</p>
+    <div class="list">${ui.fillOpts.map((o, i) => `<div class="li"><div><b>${o.items.map(x => `${numFlex(x.amount)} ${esc(x.food.unit)} ${esc(x.food.name)}`).join(' + ')}</b><span class="mini">${num(o.macros.calories)} kcal · ${num(o.macros.protein)} g Protein</span></div>
+      <button type="button" class="btn small primary" data-act="applyFill" data-i="${i}">Eintragen</button></div>`).join('')}</div>`
+    : '<p class="mini">Markiere Lebensmittel als Favorit (★), dann schlägt MASSE hier passende Kombinationen vor.</p>'}
+  </section>`;
 }
 
 function foodLabel(f) {
@@ -625,6 +910,14 @@ function renderProgress() {
     <p>Du könntest dein Tagesziel um <b>150 kcal</b> und <b>37,5 g Kohlenhydrate</b> erhöhen. Das ist ein Richtwert, keine medizinische Empfehlung.</p>
     <div class="row"><button type="button" class="btn small primary" data-act="plateauApply">Ziel erhöhen</button><button type="button" class="btn small ghost" data-act="plateauDismiss">Nicht jetzt</button></div></section>` : ''}
 
+  ${(() => { const ws = ui.reviewWeek ?? C.addDays(I.weekStart(now), -7); ui.reviewWeek = ws;
+    return renderReview(I.weeklyReview(S, ws), { title: `${icon('calendar')} Wochenrückblick`, nav: ws < I.weekStart(now) ? 'both' : 'prev' }); })()}
+  ${renderCalendar()}
+  <section class="card"><div class="row between"><h3>${icon('trophy')} Bestleistungen</h3><button type="button" class="btn small ghost" data-act="showRecords">Alle ansehen</button></div>
+    ${(() => { const r = I.records(S.workouts).sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3);
+      return r.length ? r.map(x => `<div class="li"><div><b>${esc(x.name)}</b><small>${dateShort(new Date(x.date))}</small></div><span class="amt tnum">${x.basis === 'bodyweight' ? '' : numFlex(x.weight) + ' kg × '}${x.reps}</span></div>`).join('') : '<p class="mini">Nach der zweiten Einheit einer Übung erscheinen hier deine Rekorde.</p>'; })()}
+  </section>
+
   <section class="card"><h3>Kalorien</h3>
     ${barChart(dailyTotals.map(d => ({ x: d.x, y: d.m.calories })), { goal: S.profile.goals.calories, cls: 'c-kcal', emptyText: 'Noch keine Ernährungseinträge im Zeitraum.' })}
     <div class="stats">${stat('Ø an erfassten Tagen', num(avg('calories')) + ' kcal')}${stat('Erfasste Tage', `${logged.length} / ${days.length}`)}</div></section>
@@ -770,9 +1063,16 @@ function renderMore() {
     <label class="check toggle"><input type="checkbox" data-change="toggleOnline" ${p.onlineFoodEnabled ? 'checked' : ''}> Online-Suche über Open Food Facts</label>
     <p class="mini">Nur wenn eingeschaltet und von dir ausgelöst, wird der Barcode bzw. Suchbegriff an world.openfoodfacts.org gesendet. Daten: Open Food Facts, Lizenz ODbL – Werte bitte mit dem Etikett vergleichen.</p></section>
 
+  <section class="card"><h3>Darstellung</h3>
+    <div class="seg">${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([v, l]) => `<button type="button" class="${(p.theme ?? 'auto') === v ? 'on' : ''}" data-act="setTheme" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="mini">„Automatisch“ folgt der Einstellung deines iPhones.</p>
+    <button type="button" class="btn block" data-act="plateCalc">${icon('plates')} Scheibenrechner (Stange ${numFlex(p.barWeight ?? 20)} kg)</button></section>
+
   <section class="card"><h3>Daten & Sicherung</h3>
     <p class="mini">Alle Daten liegen nur auf diesem Gerät im Speicher der Web-App. Wenn du die App vom Home-Bildschirm löschst oder Websitedaten in Safari entfernst, sind sie weg. Sichere regelmäßig, z. B. in iCloud Drive.</p>
     <p class="mini">Letzte Sicherung: <b>${S.lastBackup ? dateTime(S.lastBackup) : 'noch nie'}</b></p>
+    <p class="mini">Erinnerung auf der Übersicht:</p>
+    <div class="seg">${[[7, 'Wöchentlich'], [14, 'Alle 2 Wochen'], [0, 'Aus']].map(([v, l]) => `<button type="button" class="${(p.backupDays ?? 7) === v ? 'on' : ''}" data-act="setBackupDays" data-v="${v}">${l}</button>`).join('')}</div>
     <button type="button" class="btn primary block" data-act="exportBackup">${icon('download')} Sicherung exportieren</button>
     <button type="button" class="btn block" data-act="importBackup">${icon('upload')} Sicherung importieren</button>
     <div class="row wrap"><button type="button" class="btn small ghost" data-act="csv" data-k="food">CSV Ernährung</button>
@@ -941,8 +1241,31 @@ const A = {
   toggleSet: async el => {
     const i = +el.dataset.ex, j = +el.dataset.set;
     const wasDone = S.activeWorkout.exercises[i].sets[j].completed;
+    const setId = S.activeWorkout.exercises[i].sets[j].id;
+    const prBefore = I.prSetIds(S.activeWorkout, S.workouts).has(setId);
     await commit(s => { const st = s.activeWorkout.exercises[i].sets[j]; st.completed = !st.completed; });
-    if (!wasDone) { startRest(); tickClocks(); }
+    if (wasDone) return;
+    // Supersatz: Pause erst nach der letzten Übung der Gruppe
+    if (!S.activeWorkout.exercises[i].exercise.supersetNext || i === S.activeWorkout.exercises.length - 1) { startRest(); tickClocks(); }
+    if (!prBefore && I.prSetIds(S.activeWorkout, S.workouts).has(setId)) {
+      const it = S.activeWorkout.exercises[i], st = it.sets[j];
+      toast(`🏆 Neuer Rekord: ${it.exercise.name} ${numFlex(st.weight)} kg × ${st.reps}`);
+      navigator.vibrate?.(80);
+    }
+  },
+  setTheme: el => commit(s => { s.profile.theme = el.dataset.v; }),
+  setBackupDays: el => commit(s => { s.profile.backupDays = Number(el.dataset.v); }),
+  reviewDismiss: () => { lsSet('masse.review', C.dayKey(C.addDays(I.weekStart(new Date()), -7))); render(); },
+  reviewWeek: el => { const d = C.addDays(ui.reviewWeek, +el.dataset.d); if (d <= I.weekStart(new Date())) { ui.reviewWeek = d; render(); } },
+  calMonth: el => { const m = ui.calMonth; const n = new Date(m.getFullYear(), m.getMonth() + Number(el.dataset.d), 1); if (n <= new Date()) { ui.calMonth = n; render(); } },
+  calDay: el => { const [y, mo, d] = el.dataset.d.split('-').map(Number); ui.foodDay = new Date(y, mo - 1, d, 12); switchTab('food'); },
+  deloadDismiss: () => { lsSet('masse.deload', weekKey()); render(); },
+  showRecords: () => openSheet({ kind: 'records', title: 'Rekorde', live: true, body: recordsBody }),
+  exHistory: el => openSheet({ kind: 'exHistory', title: el.dataset.name, body: () => exerciseHistoryBody(el.dataset.id) }),
+  plateCalc: el => {
+    let w = null;
+    if (el.dataset.ex != null && S.activeWorkout) { const it = S.activeWorkout.exercises[+el.dataset.ex]; w = (it.sets.find(s => !s.completed && !s.warmup) ?? it.sets[0])?.weight ?? null; }
+    plateSheet(w);
   },
   toggleWarm: el => commit(s => { const st = s.activeWorkout.exercises[+el.dataset.ex].sets[+el.dataset.set]; st.warmup = !st.warmup; }),
   addSet: el => commit(s => { const it = s.activeWorkout.exercises[+el.dataset.ex]; const last = it.sets[it.sets.length - 1]; it.sets.push(C.trainingSet(last?.weight ?? it.exercise.seedWeight, last?.reps ?? it.exercise.low)); }),
@@ -970,7 +1293,7 @@ const A = {
   // Planeditor
   editPlan: el => openPlanEditor(findPlan(el.dataset.id)),
   newPlan: () => openPlanEditor(null),
-  exAdd: () => { draftPlan.exercises.push(C.exercise('Neue Übung', 3, 8, 12)); rerenderSheet('plan'); },
+  exAdd: () => { draftPlan.exercises.push({ ...C.exercise('Neue Übung', 3, 8, 12), muscle: 'Sonstiges', supersetNext: false }); rerenderSheet('plan'); },
   exDelete: el => { draftPlan.exercises.splice(+el.dataset.i, 1); rerenderSheet('plan'); },
   exMove: el => { const i = +el.dataset.i, j = i + +el.dataset.d; const a = draftPlan.exercises; [a[i], a[j]] = [a[j], a[i]]; rerenderSheet('plan'); },
   deletePlan: async () => {
@@ -1006,8 +1329,46 @@ const A = {
     await commit(s => { for (const e of src) { const c = { ...structuredClone(e), id: C.uid(), date: C.addDays(e.date, 1).toISOString() }; ids.push(c.id); s.foodEntries.push(c); } });
     toast(`${ids.length} Einträge kopiert`, { label: 'Rückgängig', fn: () => commit(s => { s.foodEntries = s.foodEntries.filter(e => !ids.includes(e.id)); }) });
   },
+  newDish: () => openDish(null),
+  dishAdd: el => {
+    const f = S.foods.find(x => x.id === el.dataset.id);
+    dishDraft.components.push({ food: structuredClone(f), amount: f.basisAmount });
+    rerenderSheet('dish');
+  },
+  dishRemove: el => { dishDraft.components.splice(+el.dataset.i, 1); rerenderSheet('dish'); },
+  saveTemplate: el => {
+    const meal = el.dataset.meal;
+    const items = S.foodEntries.filter(e => C.sameDay(e.date, ui.foodDay) && e.meal === meal).map(e => ({ food: structuredClone(e.food), amount: e.amount }));
+    openSheet({ kind: 'tplName', title: 'Als Vorlage speichern', closeLabel: 'Abbrechen',
+      body: () => `<form class="form" data-form="saveTemplate" data-meal="${esc(meal)}"><p class="mini">${items.length} Lebensmittel aus „${esc(meal)}“ werden gespeichert und lassen sich später mit einem Tipp eintragen.</p>
+        <label>Name der Vorlage<input name="name" value="${esc('Mein ' + meal)}" required></label><button class="btn primary block">Speichern</button></form>` });
+  },
+  openTemplate: el => templateSheet(S.templates.find(t => t.id === el.dataset.id)),
+  applyTemplate: async el => {
+    const tp = S.templates.find(t => t.id === el.dataset.id);
+    const date = C.sameDay(ui.foodDay, new Date()) || ui.tab !== 'food' ? new Date() : new Date(new Date(ui.foodDay).setHours(12, 0, 0, 0));
+    const entries = tp.items.map(it => C.newFoodEntry(it.food, it.amount, date, tp.meal));
+    await commit(s => { s.foodEntries.push(...entries); });
+    closeSheet();
+    const ids = entries.map(e => e.id);
+    toast(`„${tp.name}“ eingetragen`, { label: 'Rückgängig', fn: () => commit(s => { s.foodEntries = s.foodEntries.filter(e => !ids.includes(e.id)); }) });
+  },
+  deleteTemplate: async el => {
+    if (!(await confirmBox('Vorlage löschen? Bereits eingetragene Mahlzeiten bleiben erhalten.', 'Löschen', true))) return;
+    await commit(s => { s.templates = s.templates.filter(t => t.id !== el.dataset.id); });
+    closeSheet();
+  },
+  applyFill: async el => {
+    const o = ui.fillOpts?.[+el.dataset.i];
+    if (!o) return;
+    const now = new Date();
+    const entries = o.items.map(x => C.newFoodEntry(S.foods.find(f => f.id === x.food.id) ?? x.food, x.amount, now, defaultMeal(now)));
+    await commit(s => { s.foodEntries.push(...entries); });
+    const ids = entries.map(e => e.id);
+    toast(`Eingetragen (+${num(o.macros.calories)} kcal)`, { label: 'Rückgängig', fn: () => commit(s => { s.foodEntries = s.foodEntries.filter(e => !ids.includes(e.id)); }) });
+  },
   newFood: () => foodEditor(null, { name: $('#lib-q')?.value ?? '' }),
-  editFood: el => foodEditor(S.foods.find(f => f.id === el.dataset.id)),
+  editFood: el => { const f = S.foods.find(x => x.id === el.dataset.id); return f.dish ? openDish(f) : foodEditor(f); },
   deleteFood: async el => {
     if (!(await confirmBox('Lebensmittel aus dem Katalog löschen? Eingetragene Mahlzeiten bleiben erhalten.', 'Löschen', true))) return;
     await commit(s => { s.foods = s.foods.filter(f => f.id !== el.dataset.id); });
@@ -1097,6 +1458,31 @@ const A = {
 const req = (v, label) => { const n = parseNum(v); if (!Number.isFinite(n)) throw new C.FitnessError(`Bitte ${label} als Zahl eingeben.`); return n; };
 const opt = v => { const n = parseNum(v); return Number.isFinite(n) ? n : null; };
 const F = {
+  noop: () => {},
+  saveDish: async () => {
+    const d = dishDraft;
+    if (!d.name.trim()) throw new C.FitnessError('Bitte einen Namen für das Gericht eingeben.');
+    for (const c of d.components) if (!(c.amount > 0)) throw new C.FitnessError(`Bitte eine gültige Menge für ${c.food.name} eingeben.`);
+    const m = I.dishMacros(d.components, d.portions);
+    const values = { name: d.name.trim(), basisAmount: 1, unit: 'Portion', macros: m, recipe: true,
+      ingredients: d.components.map(c => ({ id: C.uid(), name: c.food.name, amount: c.amount, unit: c.food.unit })),
+      dish: { portions: d.portions, components: d.components }, source: `Eigenes Gericht aus ${d.components.length} Zutaten · ${numFlex(d.portions)} Portion(en)` };
+    let saved;
+    await commit(s => {
+      if (d.id) saved = Object.assign(s.foods.find(f => f.id === d.id), values);
+      else { saved = C.newFood(values.name, m, { ...values, favorite: true }); s.foods.push(saved); }
+    });
+    closeSheet(); refreshLibrary();
+    if (!d.id) amountSheet(S.foods.find(f => f.id === saved.id)); else toast('Gericht gespeichert');
+  },
+  saveTemplate: async (fd, form) => {
+    const name = String(fd.get('name') ?? '').trim();
+    if (!name) throw new C.FitnessError('Bitte einen Namen eingeben.');
+    const meal = form.dataset.meal;
+    const items = S.foodEntries.filter(e => C.sameDay(e.date, ui.foodDay) && e.meal === meal).map(e => ({ food: structuredClone(e.food), amount: e.amount }));
+    await commit(s => { s.templates.push({ id: C.uid(), name, meal, items }); });
+    closeSheet(); toast(`Vorlage „${name}“ gespeichert`);
+  },
   saveWeight: async (fd, form) => {
     const k = req(fd.get('kg'), 'das Gewicht');
     if (!(k > 20 && k < 400)) throw new C.FitnessError('Bitte ein realistisches Gewicht in kg eingeben.');
@@ -1164,6 +1550,7 @@ const F = {
       e.name = e.name.trim();
     }
     if (!(p.durationMinutes > 0 && p.durationMinutes < 600)) throw new C.FitnessError('Bitte eine gültige Dauer eingeben.');
+    if (p.exercises.length) p.exercises[p.exercises.length - 1].supersetNext = false;
     p.name = p.name.trim();
     await commit(s => { const i = s.plans.findIndex(x => x.id === p.id); if (i >= 0) s.plans[i] = p; else s.plans.push(p); });
     closeSheet(); toast('Plan gespeichert');
@@ -1251,10 +1638,27 @@ const IN = {
     let o = draftPlan;
     for (const k of path.slice(0, -1)) o = o[k];
     o[path[path.length - 1]] = v;
+    if (path[path.length - 1] === 'name' && path[0] === 'exercises' && o.muscle === 'Sonstiges') {
+      const g = I.guessMuscle(v);
+      if (g !== 'Sonstiges') { o.muscle = g; const sel = el.closest('fieldset')?.querySelector('[data-path$=".muscle"]'); if (sel) sel.value = g; }
+    }
     if (el.dataset.path === 'volleyball') rerenderSheet('plan');
   },
   libSearch: el => { $('#lib-list').innerHTML = libraryList(el.value); },
   amountPreview: el => updateAmountPreview(el.closest('form')),
+  plates: el => updatePlates(el.closest('form')),
+  dish: el => {
+    const path = el.dataset.path;
+    if (path === 'name') dishDraft.name = el.value;
+    else if (path === 'portions') dishDraft.portions = parseNum(el.value);
+    else if (path.startsWith('amount.')) dishDraft.components[+path.split('.')[1]].amount = parseNum(el.value);
+    refreshDishPreview();
+  },
+  dishSearch: el => {
+    const q = el.value.trim().toLowerCase();
+    $('#dish-results').innerHTML = q ? S.foods.filter(f => !f.dish && (f.name.toLowerCase().includes(q) || f.brand.toLowerCase().includes(q))).slice(0, 8)
+      .map(f => `<button type="button" class="li" data-act="dishAdd" data-id="${f.id}">${foodLabel(f)}${icon('plus')}</button>`).join('') || '<p class="muted center">Nichts gefunden.</p>' : '';
+  },
 };
 function refreshLibrary() {
   const list = $('#lib-list');
@@ -1295,10 +1699,12 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------- Start
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 function migrate(st) {
   st = structuredClone(st);
   st.measurements ??= [];
+  st.templates ??= [];
+  for (const p of st.plans ?? []) for (const e of p.exercises ?? []) { e.muscle ??= I.guessMuscle(e.name); e.supersetNext ??= false; }
   st.photos ??= [];
   st.supplementLogs ??= [];
   st.activeWorkout ??= null;

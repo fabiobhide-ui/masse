@@ -108,19 +108,50 @@ try {
   if (sv.activeWorkout.exercises[0].sets[0].weight !== 19.5) throw new Error('Vorschlag nicht übernommen');
   if (sv.activeWorkout.exercises[1].sets[0].weight !== 45) throw new Error('Andere Übung wurde verändert');
   ok('Double Progression schlägt 19,5 kg vor und übernimmt erst nach Bestätigung');
+  await sheet().locator('.ex').first().locator('.set').first().locator('.ck').click();
+  await expectText(page.locator('#toast'), 'Neuer Rekord');
+  await sheet().locator('.set.is-pr').first().waitFor();
+  ok('Neuer Rekord erkannt (Hinweis + Pokal am Satz)');
+  await sheet().locator('.ex').first().locator('[data-act="exHistory"]').click();
+  await expectText(sheet(), '17,5');
+  await sheet().locator('header [data-act="closeSheet"]').click();
+  ok('Übungsverlauf zeigt die letzte Einheit');
   await sheet().locator('[data-act="discardWorkout"]').click();
   await confirm();
   await page.waitForFunction(() => window.__masse.state.activeWorkout === null);
   ok('Training verworfen');
+
+  await page.click('.quick [data-act="plateCalc"]');
+  const tot = sheet().locator('input[name="total"]');
+  await tot.fill('100'); await tot.dispatchEvent('input');
+  await expectText(sheet().locator('#plate-out'), 'Je Seite: 40 kg');
+  await shot('10-scheiben');
+  await sheet().locator('header [data-act="closeSheet"]').click();
+  ok('Scheibenrechner: 100 kg → 25 + 15 kg pro Seite');
+  await page.click('.quick [data-act="showRecords"]');
+  await expectText(sheet(), 'Schrägbankdrücken KH');
+  await sheet().locator('header [data-act="closeSheet"]').click();
+  ok('Rekordliste');
 
   // Plan bearbeiten
   await page.locator('.plan', { hasText: 'Unterkörper B' }).locator('[data-act="editPlan"]').click();
   await sheet().locator('[data-act="exAdd"]').click();
   const last = sheet().locator('.exedit').last();
   await last.locator('input').first().fill('Klimmzüge');
+  await sheet().locator('.exedit').first().locator('input[data-path="exercises.0.supersetNext"]').check();
   await sheet().locator('form button.primary').click();
   await page.waitForFunction(() => window.__masse.state.plans.find(p => p.name === 'Unterkörper B').exercises.some(e => e.name === 'Klimmzüge'));
   ok('Trainingsplan bearbeitet (Übung hinzugefügt)');
+  const ub = (await state()).plans.find(p => p.name === 'Unterkörper B');
+  if (!ub.exercises[0].supersetNext || ub.exercises.at(-1).muscle !== 'Rücken') throw new Error('Supersatz/Muskelgruppe nicht gespeichert');
+  await page.locator('.plan', { hasText: 'Unterkörper B' }).locator('[data-act="startWorkout"]').click();
+  await sheet().locator('.superset').first().waitFor();
+  await expectText(sheet().locator('.ss-label'), 'Supersatz');
+  await shot('11-supersatz');
+  await sheet().locator('[data-act="discardWorkout"]').click();
+  await confirm();
+  await page.waitForFunction(() => window.__masse.state.activeWorkout === null);
+  ok('Supersatz angelegt und im Training gruppiert; Muskelgruppe automatisch erkannt');
 
   // Ernährung
   await page.click('[data-tab="food"]');
@@ -147,6 +178,37 @@ try {
   await sheet().locator('button.primary').click();
   await page.waitForFunction(() => window.__masse.state.foodEntries.some(e => e.amount === 200));
   ok('Eintrag bearbeitet');
+
+  await page.click('.quick [data-act="newDish"]');
+  const dsh = sheet();
+  await dsh.locator('input[data-path="name"]').fill('Reis-Bowl');
+  await dsh.locator('input[data-path="name"]').dispatchEvent('input');
+  for (const q of ['Basmati', 'Masseshake']) {
+    await sheet().locator('#dish-q').fill(q); await sheet().locator('#dish-q').dispatchEvent('input');
+    await sheet().locator('#dish-results [data-act="dishAdd"]').first().click();
+  }
+  const por = sheet().locator('input[data-path="portions"]');
+  await por.fill('2'); await por.dispatchEvent('input');
+  await expectText(sheet().locator('#dish-preview'), '517');
+  await shot('12-gericht');
+  await sheet().locator('form[data-form="saveDish"] button.primary').click();
+  await sheet().locator('input[name="amount"]').waitFor();
+  await sheet().locator('button.primary').click();
+  await expectText(page.locator('#main'), 'Reis-Bowl');
+  ok('Gericht aus 2 Zutaten: 517 kcal pro Portion berechnet und eingetragen');
+
+  await expectText(page.locator('#main'), 'Protein pro Mahlzeit');
+  const nBefore = (await state()).foodEntries.length;
+  const mealBtn = page.locator('[data-act="saveTemplate"]').first();
+  const meal = await mealBtn.getAttribute('data-meal');
+  const inMeal = (await state()).foodEntries.filter(e => e.meal === meal).length;
+  await mealBtn.click();
+  await sheet().locator('input[name="name"]').fill('Testvorlage');
+  await sheet().locator('button.primary').click();
+  await page.locator('.tpl-row .chip', { hasText: 'Testvorlage' }).click();
+  await sheet().locator('[data-act="applyTemplate"]').click();
+  await page.waitForFunction(n => window.__masse.state.foodEntries.length === n, nBefore + inMeal);
+  ok(`Mahlzeit als Vorlage gespeichert und mit einem Tipp erneut eingetragen (${inMeal} Lebensmittel)`);
 
   // Barcode: Open Food Facts wird im Test simuliert
   let offCalls = 0;
@@ -229,8 +291,30 @@ try {
   await sheet().locator('button.primary').click();
   await expectText(page.locator('.table'), '78,5');
   ok('Körpermaße eingetragen');
+  await expectText(page.locator('.review'), 'Wochenrückblick');
+  await page.click('[data-act="reviewWeek"][data-d="-7"]');
+  await page.locator('.cal .cd.today').scrollIntoViewIfNeeded();
+  await shot('13-kalender');
+  await page.click('.cal .cd.today');
+  await expectText(page.locator('.daynav'), 'Heute');
+  ok('Wochenrückblick mit Wochenwechsel; Kalendertag öffnet die Ernährung');
+  await page.click('[data-tab="progress"]');
   await page.evaluate(() => document.querySelector('#main').scrollTo(0, 0));
   await shot('07-fortschritt');
+
+  await page.click('[data-tab="more"]');
+  await page.click('[data-act="setTheme"][data-v="light"]');
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light', null, { timeout: 4000 }).catch(() => { throw new Error('Helles Design nicht aktiv'); });
+  const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  if (bg !== 'rgb(242, 244, 246)') throw new Error('Heller Hintergrund fehlt: ' + bg);
+  for (const tab of ['home', 'training', 'food', 'progress']) { await page.click(`[data-tab="${tab}"]`); await shot(`hell-${tab}`); }
+  await page.click('[data-tab="more"]');
+  await page.click('[data-act="setTheme"][data-v="dark"]');
+  await page.click('[data-act="setBackupDays"][data-v="14"]');
+  await page.waitForFunction(() => window.__masse.state.profile.backupDays === 14);
+  const pr = (await state()).profile;
+  if (pr.theme !== 'dark' || pr.backupDays !== 14) throw new Error('Darstellung/Erinnerung nicht gespeichert');
+  ok('Hell/Dunkel umschaltbar, Sicherungs-Erinnerung einstellbar');
 
   // Mehr: Ziele, Backup, Reset, Import
   await page.click('[data-tab="more"]');
@@ -273,9 +357,25 @@ try {
   if (offState.weights.length !== 1) throw new Error('Offline: Daten fehlen');
   await page.click('[data-tab="home"]');
   await page.click('[data-act="quickShake"]');
-  await page.waitForFunction(() => window.__masse.state.foodEntries.length === 4);
+  await page.waitForFunction(n => window.__masse.state.foodEntries.length === n, offState.foodEntries.length + 1);
   await context.setOffline(false);
   ok('Offline: App lädt aus dem Cache, Eingaben funktionieren');
+
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+  await page.clock.setFixedTime(new Date(`${today}T19:00:00+01:00`));
+  await page.click('[data-tab="more"]');
+  await page.fill('input[name="calories"]', '6000');
+  await page.click('form[data-form="saveProfile"] button.primary');
+  await page.waitForFunction(() => window.__masse.state.profile.goals.calories === 6000);
+  await page.click('[data-tab="home"]');
+  await expectText(page.locator('#main'), 'Vorschläge aus deinen Favoriten');
+  const nFill = (await state()).foodEntries.length;
+  if (await page.locator('[data-act="applyFill"]').count()) {
+    await page.locator('[data-act="applyFill"]').first().click();
+    await page.waitForFunction(n => window.__masse.state.foodEntries.length > n, nFill);
+  }
+  await shot('14-luecke');
+  ok('Abends: Kalorienlücke mit Vorschlägen aus den Favoriten');
 
   // Breite prüfen: kein horizontales Scrollen
   for (const tab of ['home', 'training', 'food', 'progress', 'more']) {
