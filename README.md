@@ -14,7 +14,8 @@ Gewicht, Snapshots der Nährwerte usw.).
 - **Training:** Wochenplan (4× Gym, 3× Volleyball), Sätze mit Gewicht, Wiederholungen und RIR,
   Aufwärmsätze, Pausentimer, Double Progression, Supersätze, Rekorde (🏆 beim Satz),
   Übungsverlauf, Scheibenrechner, Sätze pro Muskelgruppe, Deload-Hinweis, Planeditor, Historie
-- **Ernährung:** eigener Lebensmittelkatalog, Favoriten, Gerichte aus mehreren Zutaten,
+- **Ernährung:** Foto-Analyse per KI (eigener Anthropic-API-Schlüssel, nur auf dem Gerät gespeichert),
+  eigener Lebensmittelkatalog, Favoriten, Gerichte aus mehreren Zutaten,
   Mahlzeiten-Vorlagen, Protein pro Mahlzeit, Barcode-Scanner, optional Open Food Facts,
   Vortag übernehmen
 - **Fortschritt:** Gewicht mit 7-Tage-Mittel und Prognose, Wochenrückblick, Kalender,
@@ -69,3 +70,5 @@ Der Pausentimer piept nur, solange die App geöffnet ist.
 Barcode-Erkennung: [barcode-detector](https://github.com/Sec-ant/barcode-detector) (MIT) und
 [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) (MIT, basiert auf zxing-cpp, Apache-2.0),
 siehe `vendor/`. Lebensmitteldaten: Open Food Facts, Lizenz ODbL.
+KI-Foto-Analyse: [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript)
+1.9.0 (Apache-2.0), als Browser-Bundle in `vendor/anthropic-sdk.js`.

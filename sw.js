@@ -1,8 +1,8 @@
 // Service Worker: hält die App offline verfügbar. Bei jeder Änderung VERSION erhöhen.
-const VERSION = 'masse-v1.2.1';
+const VERSION = 'masse-v1.3.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/core.js', 'js/insights.js', 'js/seed.js', 'js/db.js', 'js/charts.js', 'js/scanner.js',
+  'js/app.js', 'js/core.js', 'js/insights.js', 'js/ai.js', 'js/seed.js', 'js/db.js', 'js/charts.js', 'js/scanner.js',
   'vendor/barcode-detector.js', 'vendor/zxing_reader.wasm',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];

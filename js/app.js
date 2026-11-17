@@ -5,6 +5,7 @@ import * as DB from './db.js';
 import { lineChart, barChart, donut } from './charts.js';
 import { startScanner } from './scanner.js';
 import * as I from './insights.js';
+import * as AI from './ai.js';
 
 // ---------------------------------------------------------------- Hilfen
 const $ = (s, r = document) => r.querySelector(s);
@@ -32,6 +33,10 @@ const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platfor
 const standalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
 const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* egal */ } };
+const lsDel = k => { try { localStorage.removeItem(k); } catch { /* egal */ } };
+// KI-Zugang: bewusst nur im Gerätespeicher, nie im App-Zustand oder in Sicherungen
+const aiKey = () => lsGet('masse.aiKey') ?? '';
+const aiModel = () => { const m = lsGet('masse.aiModel'); return AI.AI_MODELS.some(([id]) => id === m) ? m : AI.DEFAULT_MODEL; };
 const icon = (name) => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 
 // ---------------------------------------------------------------- Zustand
@@ -73,7 +78,7 @@ function toast(text, action) {
   toastTimer = setTimeout(() => el.classList.remove('show'), action ? 5000 : 2600);
 }
 async function run(fn) {
-  try { return await fn(); } catch (e) { console.error(e); toast(e?.message || String(e)); }
+  try { return await fn(); } catch (e) { if (!(e instanceof C.FitnessError)) console.error(e); toast(e?.message || String(e)); }
 }
 function confirmBox(text, okLabel = 'OK', danger = false) {
   return new Promise(resolve => {
@@ -596,9 +601,10 @@ function renderFood() {
       ${[['Protein', 'protein', 'c-p'], ['Kohlenh.', 'carbs', 'c-c'], ['Fett', 'fat', 'c-f']].map(([l, k, c]) => `<div><span class="mini">${l}</span><b class="tnum">${num(t[k])}<small>/${num(g[k])} g</small></b><div class="bar thin"><i class="${c}" style="width:${Math.min(100, (t[k] / g[k]) * 100)}%"></i></div></div>`).join('')}
     </div>
   </section>
-  <div class="quick four">
-    <button type="button" data-act="openLibrary">${icon('plus')}<span>Lebensmittel</span></button>
+  <div class="quick five">
+    <button type="button" data-act="openLibrary">${icon('plus')}<span>Suchen</span></button>
     <button type="button" data-act="scan">${icon('barcode')}<span>Barcode</span></button>
+    <button type="button" data-act="aiPhoto">${icon('camera')}<span>Foto</span></button>
     <button type="button" data-act="newDish">${icon('pot')}<span>Gericht</span></button>
     <button type="button" data-act="quickShake">${icon('cup')}<span>Shake</span></button>
   </div>
@@ -694,6 +700,71 @@ function renderFillCard() {
       <button type="button" class="btn small primary" data-act="applyFill" data-i="${i}">Eintragen</button></div>`).join('')}</div>`
     : '<p class="mini">Markiere Lebensmittel als Favorit (★), dann schlägt MASSE hier passende Kombinationen vor.</p>'}
   </section>`;
+}
+
+// ---------- KI-Foto: Nährwerte schätzen
+let aiDraft = null;
+function shrinkImage(file, max = 1568) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const f = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * f); c.height = Math.round(img.naturalHeight * f);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new C.FitnessError('Dieses Bild konnte nicht gelesen werden.')); };
+    img.src = url;
+  });
+}
+function aiTotals(items) { return items.reduce((m, it) => C.macros(m.calories + it.calories, m.protein + it.protein, m.carbs + it.carbs, m.fat + it.fat), C.macros(0, 0, 0, 0)); }
+function aiTotalHtml(items) {
+  const t = aiTotals(items);
+  return `<b class="tnum">${num(t.calories)} kcal</b><span class="mini">${num(t.protein)} g Protein · ${num(t.carbs)} g KH · ${num(t.fat)} g Fett</span>`;
+}
+function aiBody() {
+  const d = aiDraft;
+  if (!AI.keyLooksValid(aiKey())) return `<div class="form"><p>Für die Foto-Analyse braucht MASSE einen eigenen <b>Anthropic-API-Schlüssel</b>. Er wird nur auf diesem Gerät gespeichert.</p>
+    <p class="mini">Schlüssel erstellen: auf console.anthropic.com anmelden → „API Keys“ → „Create Key“. Die Nutzung wird dort nach Verbrauch abgerechnet (grob 1–3 Cent pro Foto mit Opus 5.5).</p>
+    <button type="button" class="btn primary block" data-act="aiSettings">Schlüssel unter „Mehr“ eintragen</button></div>`;
+  const meal = `<label>Mahlzeit<select data-change="aiMeal">${MEALS.map(m => `<option ${m === d.meal ? 'selected' : ''}>${m}</option>`).join('')}</select></label>`;
+  if (d.result) {
+    const conf = { hoch: 'ok-t', mittel: '', niedrig: 'warn-t' };
+    return `<div class="form">
+      <div class="ai-head">${d.image ? `<img class="ai-thumb" src="${d.image}" alt="">` : ''}<div><p class="mini">Geschätzt von ${esc(AI.AI_MODELS.find(([id]) => d.result.model?.startsWith(id))?.[1].split(' –')[0] ?? d.result.model ?? 'KI')}</p><div id="ai-total">${aiTotalHtml(d.result.items)}</div></div></div>
+      ${d.result.comment ? `<div class="card info"><p class="mini">${icon('bulb')} ${esc(d.result.comment)}</p></div>` : ''}
+      <div class="ai-items">${d.result.items.map((it, i) => `<div class="ai-item">
+        <div class="row"><input class="grow" value="${esc(it.name)}" data-input="aiItem" data-i="${i}" data-f="name" aria-label="Name">
+        <button type="button" class="iconbtn danger sm" data-act="aiRemove" data-i="${i}" aria-label="Entfernen">${icon('trash')}</button></div>
+        <div class="ai-nums">
+          <label>Menge (${esc(it.unit)})<input inputmode="decimal" value="${inVal(Math.round(it.amount))}" data-input="aiItem" data-i="${i}" data-f="amount"></label>
+          <label>kcal<input inputmode="decimal" value="${inVal(Math.round(it.calories))}" data-input="aiItem" data-i="${i}" data-f="calories"></label>
+          <label>Protein<input inputmode="decimal" value="${inVal(Math.round(it.protein * 10) / 10)}" data-input="aiItem" data-i="${i}" data-f="protein"></label>
+          <label>KH<input inputmode="decimal" value="${inVal(Math.round(it.carbs * 10) / 10)}" data-input="aiItem" data-i="${i}" data-f="carbs"></label>
+          <label>Fett<input inputmode="decimal" value="${inVal(Math.round(it.fat * 10) / 10)}" data-input="aiItem" data-i="${i}" data-f="fat"></label>
+        </div>
+        <span class="mini">Sicherheit: <span class="${conf[it.confidence]}">${it.confidence}</span></span></div>`).join('') || '<p class="muted center">Keine Einträge übrig.</p>'}</div>
+      ${meal}
+      <p class="mini">Schätzwerte, oft 20–30 % daneben – vor allem bei Öl, Butter und Soßen. Ändere die Menge, dann passen sich die Nährwerte an.</p>
+      <button type="button" class="btn primary block" data-act="aiSave" ${d.result.items.length ? '' : 'disabled'}>${icon('check')} ${d.result.items.length} ${d.result.items.length === 1 ? 'Eintrag' : 'Einträge'} speichern</button>
+      <button type="button" class="btn ghost block" data-act="aiRetry">Neu analysieren</button></div>`;
+  }
+  return `<div class="form">
+    ${d.image ? `<img class="ai-photo" src="${d.image}" alt="Dein Foto">` : `<div class="ai-photo empty">${icon('camera')}<span>Fotografiere deinen Teller von schräg oben, gut beleuchtet.</span></div>`}
+    <label class="btn block ${d.image ? '' : 'primary'}">${icon('camera')} ${d.image ? 'Anderes Foto' : 'Foto aufnehmen oder wählen'}<input type="file" accept="image/*" hidden data-change="aiPick"></label>
+    <label>Notizen (optional)<textarea rows="2" data-input="aiNotes" placeholder="z. B. ca. 250 g Reis, mit Olivenöl gebraten, Hähnchen 150 g">${esc(d.notes)}</textarea></label>
+    ${meal}
+    ${d.error ? `<div class="card warn"><p class="mini">${esc(d.error)}</p></div>` : ''}
+    <button type="button" class="btn primary block" data-act="aiAnalyze" ${d.image && !d.busy ? '' : 'disabled'}>${d.busy ? '<span class="spin"></span> Analysiere … (ca. 10–40 Sek.)' : `${icon('bulb')} Nährwerte schätzen`}</button>
+    <p class="mini">Foto und Notizen werden zur Auswertung an Anthropic gesendet (Modell: ${esc(AI.AI_MODELS.find(([id]) => id === aiModel())[1])}). Das Foto wird nicht in MASSE gespeichert.</p></div>`;
+}
+function openAiPhoto() {
+  const d = ui.foodDay && !C.sameDay(ui.foodDay, new Date()) && ui.tab === 'food' ? new Date(new Date(ui.foodDay).setHours(12)) : new Date();
+  aiDraft = { image: null, b64: null, notes: '', meal: defaultMeal(d), date: d, result: null, busy: false, error: null };
+  openSheet({ kind: 'ai', title: 'Essen per Foto', closeLabel: 'Abbrechen', body: aiBody, onClose: () => { aiDraft = null; } });
 }
 
 function foodLabel(f) {
@@ -1058,6 +1129,15 @@ function renderMore() {
     <div class="list">${S.supplements.map(s => `<button type="button" class="li" data-act="editSupp" data-id="${s.id}"><div><b>${esc(s.name)}${s.paused ? ' <span class="pill">pausiert</span>' : ''}</b><span class="mini">${esc(s.dose)}${s.note ? ' · ' + esc(s.note) : ''}</span></div>${icon('chev')}</button>`).join('') || empty('Keine Supplemente.')}</div>
     <p class="mini">Keine medizinische Empfehlung. Dosierungen individuell abklären.</p></section>
 
+  <section class="card" id="ai-card"><h3>${icon('camera')} KI-Foto-Analyse</h3>
+    <p class="mini">Unter Ernährung → „Foto“ schätzt eine KI die Nährwerte deines Essens. Dafür brauchst du einen eigenen API-Schlüssel von Anthropic (console.anthropic.com → „API Keys“). Abgerechnet wird dort nach Verbrauch, grob 1–3 Cent pro Foto mit Opus 5.5, mit Haiku 5.5 deutlich weniger.</p>
+    ${AI.keyLooksValid(aiKey()) ? `<p class="mini">Gespeichert: <b>${esc(aiKey().slice(0, 10))}…${esc(aiKey().slice(-4))}</b></p>
+      <button type="button" class="btn small danger ghost" data-act="aiKeyDelete">Schlüssel entfernen</button>`
+    : `<form class="form" data-form="saveAiKey"><label>API-Schlüssel<input name="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-…"></label>
+      <button class="btn primary block">Schlüssel speichern</button></form>`}
+    <label>Modell<select data-change="aiModel">${AI.AI_MODELS.map(([id, l]) => `<option value="${id}" ${id === aiModel() ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+    <p class="mini">Der Schlüssel bleibt nur auf diesem Gerät und ist nicht Teil von Sicherungen. Fotos und Notizen gehen nur beim Analysieren an Anthropic.</p></section>
+
   <section class="card"><h3>Lebensmittel</h3>
     <button type="button" class="btn block" data-act="openLibrary">${icon('food')} Katalog verwalten (${S.foods.length})</button>
     <label class="check toggle"><input type="checkbox" data-change="toggleOnline" ${p.onlineFoodEnabled ? 'checked' : ''}> Online-Suche über Open Food Facts</label>
@@ -1085,7 +1165,7 @@ function renderMore() {
     <button type="button" class="btn small ghost" data-act="checkUpdate">Nach Update suchen</button></section>
 
   <section class="card"><h3>Über</h3>
-    <p class="mini">MASSE Web · Version ${APP_VERSION}. Keine Konten, keine Werbung, kein Tracking. Barcode-Erkennung: zxing-wasm / barcode-detector (MIT, Apache-2.0).</p>
+    <p class="mini">MASSE Web · Version ${APP_VERSION}. Keine Konten, keine Werbung, kein Tracking. Barcode-Erkennung: zxing-wasm / barcode-detector (MIT, Apache-2.0). KI-Analyse: Anthropic SDK (Apache-2.0).</p>
     <button type="button" class="btn danger ghost block" data-act="resetAll">Alle Daten löschen</button></section>
   </div>`;
 }
@@ -1255,6 +1335,43 @@ const A = {
   },
   setTheme: el => commit(s => { s.profile.theme = el.dataset.v; }),
   setBackupDays: el => commit(s => { s.profile.backupDays = Number(el.dataset.v); }),
+  aiPhoto: () => openAiPhoto(),
+  aiSettings: () => { closeAllSheets(); switchTab('more'); setTimeout(() => $('#ai-card')?.scrollIntoView({ block: 'start' }), 50); },
+  aiAnalyze: async () => {
+    const d = aiDraft;
+    if (!d?.b64 || d.busy) return;
+    d.busy = true; d.error = null; rerenderSheet('ai');
+    try {
+      const r = await AI.analyzeFood({ apiKey: aiKey(), model: aiModel(), imageBase64: d.b64, mediaType: 'image/jpeg', notes: d.notes });
+      if (aiDraft !== d) return; // Fenster wurde geschlossen
+      d.result = r;
+    } catch (e) {
+      if (aiDraft !== d) return;
+      d.error = e instanceof C.FitnessError ? e.message : 'Unerwarteter Fehler: ' + (e?.message ?? e);
+      if (!(e instanceof C.FitnessError)) console.error(e);
+    } finally { d.busy = false; if (aiDraft === d) rerenderSheet('ai'); }
+  },
+  aiRetry: () => { aiDraft.result = null; rerenderSheet('ai'); },
+  aiRemove: el => { aiDraft.result.items.splice(+el.dataset.i, 1); rerenderSheet('ai'); },
+  aiSave: async () => {
+    const d = aiDraft;
+    const items = d.result.items;
+    for (const it of items) {
+      if (!it.name.trim()) throw new C.FitnessError('Bitte jedem Eintrag einen Namen geben.');
+      if (!(it.amount > 0) || ![it.calories, it.protein, it.carbs, it.fat].every(v => Number.isFinite(v) && v >= 0)) throw new C.FitnessError(`Bitte gültige Werte bei „${it.name}“ eingeben.`);
+    }
+    const date = d.date;
+    const entries = items.map(it => C.newFoodEntry(C.newFood(it.name.trim(), C.macros(it.calories, it.protein, it.carbs, it.fat),
+      { basisAmount: it.amount, unit: it.unit, source: `KI-Schätzung aus Foto (${dateShort(date)}) · Werte geschätzt` }), it.amount, date, d.meal));
+    await commit(s => { s.foodEntries.push(...entries); });
+    closeSheet();
+    const ids = entries.map(e => e.id);
+    toast(`${entries.length} ${entries.length === 1 ? 'Eintrag' : 'Einträge'} gespeichert (${num(aiTotals(items).calories)} kcal)`, { label: 'Rückgängig', fn: () => commit(s => { s.foodEntries = s.foodEntries.filter(e => !ids.includes(e.id)); }) });
+  },
+  aiKeyDelete: async () => {
+    if (!(await confirmBox('API-Schlüssel von diesem Gerät entfernen?', 'Entfernen', true))) return;
+    lsDel('masse.aiKey'); render(); toast('Schlüssel entfernt');
+  },
   reviewDismiss: () => { lsSet('masse.review', C.dayKey(C.addDays(I.weekStart(new Date()), -7))); render(); },
   reviewWeek: el => { const d = C.addDays(ui.reviewWeek, +el.dataset.d); if (d <= I.weekStart(new Date())) { ui.reviewWeek = d; render(); } },
   calMonth: el => { const m = ui.calMonth; const n = new Date(m.getFullYear(), m.getMonth() + Number(el.dataset.d), 1); if (n <= new Date()) { ui.calMonth = n; render(); } },
@@ -1449,6 +1566,7 @@ const A = {
     if (!(await confirmBox('Wirklich ALLE Daten auf diesem Gerät löschen? Das kann nicht rückgängig gemacht werden.', 'Weiter', true))) return;
     if (!(await confirmBox('Letzte Bestätigung: Training, Ernährung, Gewicht, Fotos und Einstellungen werden gelöscht.', 'Alles löschen', true))) return;
     await DB.clearAll();
+    lsDel('masse.aiKey'); lsDel('masse.aiModel');
     S = seedState(); await DB.saveState(S);
     photoURLs.clear(); ui.rest = null; closeAllSheets(); switchTab('home'); toast('Alle Daten gelöscht.');
   },
@@ -1458,6 +1576,11 @@ const A = {
 const req = (v, label) => { const n = parseNum(v); if (!Number.isFinite(n)) throw new C.FitnessError(`Bitte ${label} als Zahl eingeben.`); return n; };
 const opt = v => { const n = parseNum(v); return Number.isFinite(n) ? n : null; };
 const F = {
+  saveAiKey: async fd => {
+    const k = String(fd.get('key') ?? '').trim();
+    if (!AI.keyLooksValid(k)) throw new C.FitnessError('Das sieht nicht wie ein Anthropic-API-Schlüssel aus (beginnt mit „sk-ant-“).');
+    lsSet('masse.aiKey', k); render(); toast('Schlüssel gespeichert – nur auf diesem Gerät');
+  },
   noop: () => {},
   saveDish: async () => {
     const d = dishDraft;
@@ -1596,6 +1719,16 @@ const F = {
 
 // ---------------------------------------------------------------- Änderungen in Feldern
 const CH = {
+  aiPick: async el => {
+    const file = el.files?.[0];
+    el.value = '';
+    if (!file || !aiDraft) return;
+    const url = await shrinkImage(file);
+    Object.assign(aiDraft, { image: url, b64: url.split(',')[1], result: null, error: null });
+    rerenderSheet('ai');
+  },
+  aiMeal: el => { if (aiDraft) aiDraft.meal = el.value; },
+  aiModel: el => { lsSet('masse.aiModel', el.value); toast('Modell gespeichert'); },
   setField: (el) => {
     const i = +el.dataset.ex, j = +el.dataset.set, f = el.dataset.field;
     let v;
@@ -1627,6 +1760,20 @@ const CH = {
   },
 };
 const IN = {
+  aiNotes: el => { if (aiDraft) aiDraft.notes = el.value; },
+  aiItem: el => {
+    const items = aiDraft?.result?.items; if (!items) return;
+    const i = +el.dataset.i, f = el.dataset.f;
+    if (f === 'name') { items[i].name = el.value; return; }
+    const v = parseNum(el.value);
+    if (f === 'amount') {
+      if (!(v > 0)) return;
+      items[i] = AI.rescaleItem(items[i], v);
+      const row = el.closest('.ai-item');
+      for (const k of ['calories', 'protein', 'carbs', 'fat']) row.querySelector(`[data-f="${k}"]`).value = inVal(k === 'calories' ? Math.round(items[i][k]) : Math.round(items[i][k] * 10) / 10);
+    } else items[i][f] = Number.isFinite(v) && v >= 0 ? v : NaN;
+    const t = $('#ai-total'); if (t) t.innerHTML = aiTotalHtml(items.filter(x => [x.calories, x.protein, x.carbs, x.fat].every(Number.isFinite)));
+  },
   plan: el => {
     const path = el.dataset.path.split('.');
     let v = el.type === 'checkbox' ? el.checked : el.value;
@@ -1699,7 +1846,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------- Start
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 function migrate(st) {
   st = structuredClone(st);
   st.measurements ??= [];

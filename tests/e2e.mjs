@@ -19,7 +19,7 @@ const context = await browser.newContext({ ...devices['iPhone 15'], deviceScaleF
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
-page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !(m.text().includes('401') && m.location().url.includes('api.anthropic.com'))) errors.push('console: ' + m.text() + ' @ ' + m.location().url); });
 
 let step = 0;
 const ok = msg => console.log(`✓ ${++step}. ${msg}`);
@@ -38,6 +38,7 @@ const expectText = async (loc, text) => {
 };
 const confirm = async () => { await page.locator('.dialog [data-r="1"]').click(); };
 const state = () => page.evaluate(() => window.__masse.state);
+const C_portionKcal = e => e.food.macros.calories * e.amount / e.food.basisAmount;
 
 try {
   await page.goto(`http://127.0.0.1:${PORT}/`);
@@ -209,6 +210,74 @@ try {
   await sheet().locator('[data-act="applyTemplate"]').click();
   await page.waitForFunction(n => window.__masse.state.foodEntries.length === n, nBefore + inMeal);
   ok(`Mahlzeit als Vorlage gespeichert und mit einem Tipp erneut eingetragen (${inMeal} Lebensmittel)`);
+
+  // KI-Foto (Anthropic-API simuliert)
+  await page.click('.quick [data-act="aiPhoto"]');
+  await expectText(sheet(), 'API-Schlüssel');
+  await sheet().locator('[data-act="aiSettings"]').click();
+  await page.locator('#ai-card').waitFor();
+  await page.fill('#ai-card input[name="key"]', 'falsch');
+  await page.click('#ai-card button.primary');
+  await expectText(page.locator('#toast'), 'sk-ant-');
+  await page.fill('#ai-card input[name="key"]', 'sk-ant-api03-TESTKEY_abcdefghijklmnopqrstuvwxyz');
+  await page.click('#ai-card button.primary');
+  await expectText(page.locator('#ai-card'), 'Gespeichert');
+  if (JSON.stringify(await state()).includes('TESTKEY')) throw new Error('API-Schlüssel landet im App-Zustand/Sicherung');
+  ok('API-Schlüssel geprüft und nur im Gerätespeicher abgelegt');
+
+  const aiCalls = [];
+  let aiMode = 'auth';
+  await page.route('https://api.anthropic.com/**', async route => {
+    const req = route.request();
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    aiCalls.push({ headers: req.headers(), body: req.postDataJSON() });
+    if (aiMode === 'auth') return route.fulfill({ status: 401, contentType: 'application/json', headers: cors, body: JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }) });
+    const result = { is_food: true, comment: 'Öl in der Pfanne geschätzt.', items: [
+      { name: 'Basmatireis gekocht', amount: 250, unit: 'g', calories: 325, protein: 6.8, carbs: 70, fat: 0.8, confidence: 'hoch' },
+      { name: 'Hähnchenbrust gebraten', amount: 150, unit: 'g', calories: 248, protein: 46, carbs: 0, fat: 6, confidence: 'mittel' },
+      { name: 'Currysoße', amount: 80, unit: 'g', calories: 96, protein: 1.5, carbs: 7, fat: 7, confidence: 'niedrig' },
+    ] };
+    return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-opus-5-5',
+      content: [{ type: 'text', text: JSON.stringify(result) }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1600, output_tokens: 420 } }) });
+  });
+  await page.click('[data-tab="food"]');
+  await page.click('.quick [data-act="aiPhoto"]');
+  await sheet().locator('input[data-change="aiPick"]').setInputFiles({ name: 'teller.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEklEQVR4nGP4z8DwHwwYYAwAZfoL9VZrzoUAAAAASUVORK5CYII=', 'base64') });
+  await sheet().locator('img.ai-photo').waitFor();
+  await sheet().locator('textarea[data-input="aiNotes"]').fill('ca. 250 g Reis, mit Öl gebraten');
+  await sheet().locator('textarea[data-input="aiNotes"]').dispatchEvent('input');
+  await shot('15-ki-foto');
+  await sheet().locator('[data-act="aiAnalyze"]').click();
+  await expectText(sheet().locator('.card.warn'), 'API-Schlüssel wurde abgelehnt');
+  ok('Ungültiger Schlüssel: verständliche Fehlermeldung, nichts gespeichert');
+
+  aiMode = 'ok';
+  await sheet().locator('[data-act="aiAnalyze"]').click();
+  await sheet().locator('.ai-item').first().waitFor({ timeout: 8000 });
+  const call = aiCalls.at(-1);
+  if (call.headers.authorization !== 'Bearer sk-ant-api03-TESTKEY_abcdefghijklmnopqrstuvwxyz' || call.headers['anthropic-dangerous-direct-browser-access'] !== 'true') throw new Error('Schlüssel/Browser-Header nicht gesendet');
+  if (!String(call.headers['anthropic-beta'] ?? '').includes('server-side-fallback-2026-07-01')) throw new Error('Fallback-Beta fehlt');
+  if (call.body.model !== 'claude-opus-5-5' || call.body.fallbacks !== 'default' || call.body.output_config?.format?.type !== 'json_schema') throw new Error('Anfrage falsch: ' + JSON.stringify(call.body).slice(0, 300));
+  const blocks = call.body.messages[0].content;
+  if (blocks[0].type !== 'image' || blocks[0].source.media_type !== 'image/jpeg' || !blocks[1].text.includes('mit Öl gebraten')) throw new Error('Bild/Notiz fehlen in der Anfrage');
+  await expectText(sheet().locator('#ai-total'), '669 kcal');
+  await shot('16-ki-ergebnis');
+  ok('KI-Antwort: 3 Komponenten, 669 kcal; Anfrage mit Bild, Notiz, JSON-Schema und Fallback');
+
+  const amt = sheet().locator('.ai-item').first().locator('[data-f="amount"]');
+  await amt.fill('500'); await amt.dispatchEvent('input');
+  if ((await sheet().locator('.ai-item').first().locator('[data-f="calories"]').inputValue()) !== '650') throw new Error('Nährwerte skalieren nicht mit der Menge');
+  await sheet().locator('.ai-item').nth(2).locator('[data-act="aiRemove"]').click();
+  await expectText(sheet().locator('#ai-total'), '898 kcal');
+  const nAi = (await state()).foodEntries.length;
+  await sheet().locator('[data-act="aiSave"]').click();
+  await page.waitForFunction(n => window.__masse.state.foodEntries.length === n + 2, nAi);
+  const rice = (await state()).foodEntries.find(e => e.food.name === 'Basmatireis gekocht');
+  if (rice.amount !== 500 || Math.round(C_portionKcal(rice)) !== 650) throw new Error('Gespeicherter Eintrag falsch');
+  await expectText(page.locator('#main'), 'Hähnchenbrust gebraten');
+  ok('Menge geändert (Werte skaliert), Komponente entfernt, 2 Einträge gespeichert');
+  await page.unroute('https://api.anthropic.com/**');
 
   // Barcode: Open Food Facts wird im Test simuliert
   let offCalls = 0;
