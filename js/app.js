@@ -6,6 +6,7 @@ import { lineChart, barChart, donut } from './charts.js';
 import { startScanner } from './scanner.js';
 import * as I from './insights.js';
 import * as AI from './ai.js';
+import * as OCR from './ocr.js';
 
 // ---------------------------------------------------------------- Hilfen
 const $ = (s, r = document) => r.querySelector(s);
@@ -727,6 +728,20 @@ function aiTotalHtml(items) {
 }
 function aiBody() {
   const d = aiDraft;
+  const seg = `<div class="seg">${[['ocr', 'Text ablesen'], ['ai', 'Essen schätzen (KI)']].map(([v, l]) => `<button type="button" class="${d.mode === v ? 'on' : ''}" data-act="aiMode" data-v="${v}" ${d.busy ? 'disabled' : ''}>${l}</button>`).join('')}</div>`;
+  return d.result ? aiInner() : seg + (d.mode === 'ocr' ? ocrBody() : aiInner());
+}
+function ocrBody() {
+  const d = aiDraft;
+  return `<div class="form">
+    ${d.image ? `<img class="ai-photo" src="${d.image}" alt="Dein Foto">` : `<div class="ai-photo empty">${icon('camera')}<span>Fotografiere die <b>Nährwerttabelle</b> einer Verpackung – gerade, scharf, ohne Spiegelung – oder wähle einen <b>Screenshot</b>, z. B. aus Yazio.</span></div>`}
+    ${d.busy ? `<div class="ocr-progress"><span class="spin"></span> <span id="ocr-status">${esc(d.status ?? 'Starte …')}</span></div><div class="bar"><i class="c-kcal" id="ocr-bar" style="width:${Math.round((d.progress ?? 0) * 100)}%"></i></div>`
+      : `${d.image ? `<button type="button" class="btn block primary" data-act="ocrRun">${icon('check')} Text ablesen</button>` : ''}<label class="btn block ${d.image ? '' : 'primary'}">${icon('camera')} ${d.image ? 'Anderes Foto' : 'Foto aufnehmen oder wählen'}<input type="file" accept="image/*" hidden data-change="aiPick"></label>`}
+    ${d.error ? `<div class="card warn"><p class="mini">${esc(d.error)}</p></div>` : ''}
+    <p class="mini">Die Texterkennung läuft komplett auf deinem iPhone – kostenlos, ohne KI, nichts wird gesendet. Beim ersten Mal werden ca. 5 MB geladen, danach geht es auch offline. Danach prüfst du die Werte und gibst einen Namen ein.</p></div>`;
+}
+function aiInner() {
+  const d = aiDraft;
   if (!AI.keyLooksValid(aiKey())) return `<div class="form"><p>Für die Foto-Analyse braucht MASSE einen eigenen <b>Anthropic-API-Schlüssel</b>. Er wird nur auf diesem Gerät gespeichert.</p>
     <p class="mini">Schlüssel erstellen: auf console.anthropic.com anmelden → „API Keys“ → „Create Key“. Die Nutzung wird dort nach Verbrauch abgerechnet (grob 1–3 Cent pro Foto mit Opus 5.5).</p>
     <button type="button" class="btn primary block" data-act="aiSettings">Schlüssel unter „Mehr“ eintragen</button></div>`;
@@ -763,8 +778,8 @@ function aiBody() {
 }
 function openAiPhoto() {
   const d = ui.foodDay && !C.sameDay(ui.foodDay, new Date()) && ui.tab === 'food' ? new Date(new Date(ui.foodDay).setHours(12)) : new Date();
-  aiDraft = { image: null, b64: null, notes: '', meal: defaultMeal(d), date: d, result: null, busy: false, error: null };
-  openSheet({ kind: 'ai', title: 'Essen per Foto', closeLabel: 'Abbrechen', body: aiBody, onClose: () => { aiDraft = null; } });
+  aiDraft = { mode: lsGet('masse.photoMode') === 'ai' ? 'ai' : 'ocr', image: null, b64: null, notes: '', meal: defaultMeal(d), date: d, result: null, busy: false, error: null };
+  openSheet({ kind: 'ai', title: 'Foto auswerten', closeLabel: 'Abbrechen', body: aiBody, onClose: () => { aiDraft = null; } });
 }
 
 function foodLabel(f) {
@@ -830,7 +845,10 @@ function foodEditor(food = null, prefill = {}) {
   openSheet({
     kind: 'foodEditor', title: food ? 'Lebensmittel bearbeiten' : 'Neues Lebensmittel', closeLabel: 'Abbrechen',
     body: () => `<form data-form="saveFood" class="form" data-id="${food?.id ?? ''}" data-then="${prefill.thenAdd ? '1' : ''}">
-      ${prefill.source ? `<input type="hidden" name="source" value="${esc(prefill.source)}"><p class="mini">Vorbelegt mit Daten von Open Food Facts – leere Felder bitte vom Etikett ergänzen.</p>` : ''}
+      ${prefill.source ? `<input type="hidden" name="source" value="${esc(prefill.source)}">` : ''}
+      ${prefill.source || prefill.notice ? `<p class="mini">${prefill.notice ? esc(prefill.notice) : 'Vorbelegt mit Daten von Open Food Facts – leere Felder bitte vom Etikett ergänzen.'}</p>` : ''}
+      ${prefill.warnings?.length ? `<div class="card warn"><p class="mini">${prefill.warnings.map(esc).join('<br>')}</p></div>` : ''}
+      ${prefill.rawText ? `<details class="ocr-raw"><summary class="mini">Erkannten Text anzeigen</summary><pre>${esc(prefill.rawText)}</pre></details>` : ''}
       <label>Name<input name="name" value="${esc(f.name)}" required></label>
       <label>Marke (optional)<input name="brand" value="${esc(f.brand)}"></label>
       <div class="grid2"><label>Nährwerte je<input name="basisAmount" inputmode="decimal" value="${inVal(f.basisAmount)}" required></label>
@@ -1165,7 +1183,7 @@ function renderMore() {
     <button type="button" class="btn small ghost" data-act="checkUpdate">Nach Update suchen</button></section>
 
   <section class="card"><h3>Über</h3>
-    <p class="mini">MASSE Web · Version ${APP_VERSION}. Keine Konten, keine Werbung, kein Tracking. Barcode-Erkennung: zxing-wasm / barcode-detector (MIT, Apache-2.0). KI-Analyse: Anthropic SDK (Apache-2.0).</p>
+    <p class="mini">MASSE Web · Version ${APP_VERSION}. Keine Konten, keine Werbung, kein Tracking. Barcode-Erkennung: zxing-wasm / barcode-detector (MIT, Apache-2.0). KI-Analyse: Anthropic SDK (Apache-2.0). Texterkennung: Tesseract.js (Apache-2.0).</p>
     <button type="button" class="btn danger ghost block" data-act="resetAll">Alle Daten löschen</button></section>
   </div>`;
 }
@@ -1336,6 +1354,28 @@ const A = {
   setTheme: el => commit(s => { s.profile.theme = el.dataset.v; }),
   setBackupDays: el => commit(s => { s.profile.backupDays = Number(el.dataset.v); }),
   aiPhoto: () => openAiPhoto(),
+  aiMode: el => { aiDraft.mode = el.dataset.v; aiDraft.error = null; lsSet('masse.photoMode', el.dataset.v); rerenderSheet('ai'); },
+  ocrRun: async () => {
+    const d = aiDraft;
+    if (!d?.image || d.busy) return;
+    Object.assign(d, { busy: true, error: null, status: 'Starte …', progress: 0 }); rerenderSheet('ai');
+    try {
+      const r = await OCR.readNutrition(d.image, (status, progress) => {
+        d.status = status; d.progress = progress;
+        const st = $('#ocr-status'), bar = $('#ocr-bar');
+        if (st) st.textContent = `${status} … ${Math.round(progress * 100)} %`;
+        if (bar) bar.style.width = `${Math.round(progress * 100)}%`;
+      });
+      if (aiDraft !== d) return;
+      closeSheet();
+      foodEditor(null, { name: r.name, basisAmount: r.basis.amount, unit: r.basis.unit, macros: r.macros, thenAdd: true,
+        source: 'Texterkennung aus Foto · Werte bitte mit dem Bild vergleichen', notice: `${OCR.summary(r)} ${r.name ? 'Name und Werte' : 'Bitte Namen eingeben und Werte'} prüfen.`, warnings: r.warnings, rawText: r.text });
+    } catch (e) {
+      if (aiDraft !== d) return;
+      d.error = e instanceof C.FitnessError ? e.message : 'Texterkennung fehlgeschlagen: ' + (e?.message ?? e);
+      if (!(e instanceof C.FitnessError)) console.error(e);
+    } finally { d.busy = false; if (aiDraft === d) rerenderSheet('ai'); }
+  },
   aiSettings: () => { closeAllSheets(); switchTab('more'); setTimeout(() => $('#ai-card')?.scrollIntoView({ block: 'start' }), 50); },
   aiAnalyze: async () => {
     const d = aiDraft;
@@ -1723,9 +1763,10 @@ const CH = {
     const file = el.files?.[0];
     el.value = '';
     if (!file || !aiDraft) return;
-    const url = await shrinkImage(file);
+    const url = await shrinkImage(file, aiDraft.mode === 'ocr' ? 2400 : 1568);
     Object.assign(aiDraft, { image: url, b64: url.split(',')[1], result: null, error: null });
     rerenderSheet('ai');
+    if (aiDraft.mode === 'ocr') await A.ocrRun();
   },
   aiMeal: el => { if (aiDraft) aiDraft.meal = el.value; },
   aiModel: el => { lsSet('masse.aiModel', el.value); toast('Modell gespeichert'); },
@@ -1846,7 +1887,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------- Start
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 function migrate(st) {
   st = structuredClone(st);
   st.measurements ??= [];

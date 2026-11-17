@@ -14,7 +14,9 @@ Gewicht, Snapshots der Nährwerte usw.).
 - **Training:** Wochenplan (4× Gym, 3× Volleyball), Sätze mit Gewicht, Wiederholungen und RIR,
   Aufwärmsätze, Pausentimer, Double Progression, Supersätze, Rekorde (🏆 beim Satz),
   Übungsverlauf, Scheibenrechner, Sätze pro Muskelgruppe, Deload-Hinweis, Planeditor, Historie
-- **Ernährung:** Foto-Analyse per KI (eigener Anthropic-API-Schlüssel, nur auf dem Gerät gespeichert),
+- **Ernährung:** Foto → „Text ablesen“: Nährwerttabellen und App-Screenshots (z. B. Yazio) per
+  Texterkennung auf dem Gerät auslesen (ohne KI, offline); optional „Essen schätzen“ per KI
+  (eigener Anthropic-API-Schlüssel, nur auf dem Gerät gespeichert),
   eigener Lebensmittelkatalog, Favoriten, Gerichte aus mehreren Zutaten,
   Mahlzeiten-Vorlagen, Protein pro Mahlzeit, Barcode-Scanner, optional Open Food Facts,
   Vortag übernehmen
@@ -72,3 +74,5 @@ Barcode-Erkennung: [barcode-detector](https://github.com/Sec-ant/barcode-detecto
 siehe `vendor/`. Lebensmitteldaten: Open Food Facts, Lizenz ODbL.
 KI-Foto-Analyse: [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript)
 1.9.0 (Apache-2.0), als Browser-Bundle in `vendor/anthropic-sdk.js`.
+Texterkennung: [Tesseract.js](https://github.com/naptha/tesseract.js) 7.0.0 und tesseract.js-core
+(Apache-2.0) mit deutschen Sprachdaten (tessdata, Apache-2.0) in `vendor/ocr/`.

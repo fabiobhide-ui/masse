@@ -211,8 +211,32 @@ try {
   await page.waitForFunction(n => window.__masse.state.foodEntries.length === n, nBefore + inMeal);
   ok(`Mahlzeit als Vorlage gespeichert und mit einem Tipp erneut eingetragen (${inMeal} Lebensmittel)`);
 
+  // Foto → Text ablesen (echte Texterkennung, ohne KI)
+  const lp = await context.newPage();
+  await lp.setContent(`<div id="l" style="font:15px Arial;width:340px;padding:14px;border:2px solid #000;background:#fff;color:#000"><b>Nährwerte</b>
+    <table style="width:100%"><tr><td></td><td align="right"><b>pro 100 g</b></td></tr><tr><td>Energie</td><td align="right">1580 kJ / 377 kcal</td></tr>
+    <tr><td>Fett</td><td align="right">7,0 g</td></tr><tr><td>davon gesättigte Fettsäuren</td><td align="right">1,2 g</td></tr>
+    <tr><td>Kohlenhydrate</td><td align="right">58,7 g</td></tr><tr><td>davon Zucker</td><td align="right">1,1 g</td></tr><tr><td>Eiweiß</td><td align="right">13,5 g</td></tr></table></div>`);
+  const labelPng = await lp.locator('#l').screenshot();
+  await lp.close();
+  await page.click('.quick [data-act="aiPhoto"]');
+  await expectText(sheet().locator('.seg .on'), 'Text ablesen');
+  await sheet().locator('input[data-change="aiPick"]').setInputFiles({ name: 'etikett.png', mimeType: 'image/png', buffer: labelPng });
+  await sheet().locator('form[data-form="saveFood"]').waitFor({ timeout: 30000 });
+  const fv = n => sheet().locator(`input[name="${n}"]`).inputValue();
+  const got = [await fv('calories'), await fv('protein'), await fv('carbs'), await fv('fat'), await fv('basisAmount')].join('|');
+  if (got !== '377|13,5|58,7|7|100') throw new Error('Texterkennung falsch: ' + got);
+  await shot('17-text-erkannt');
+  await sheet().locator('input[name="name"]').fill('Haferflocken (Etikett)');
+  await sheet().locator('form[data-form="saveFood"] button.primary').click();
+  await sheet().locator('input[name="amount"]').fill('60');
+  await sheet().locator('button.primary').click();
+  await expectText(page.locator('#main'), 'Haferflocken (Etikett)');
+  ok('Foto einer Nährwerttabelle: Werte per Texterkennung abgelesen (377 kcal, 13,5 P, 58,7 KH, 7 F) und eingetragen');
+
   // KI-Foto (Anthropic-API simuliert)
   await page.click('.quick [data-act="aiPhoto"]');
+  await sheet().locator('[data-act="aiMode"][data-v="ai"]').click();
   await expectText(sheet(), 'API-Schlüssel');
   await sheet().locator('[data-act="aiSettings"]').click();
   await page.locator('#ai-card').waitFor();
