@@ -1699,7 +1699,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------- Start
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 function migrate(st) {
   st = structuredClone(st);
   st.measurements ??= [];
