@@ -210,6 +210,24 @@ export function productToFood(p) {
     source: 'Open Food Facts · ODbL · pro 100 g/ml gemäß Produkt; Etikett und Einheit prüfen',
   });
 }
+/** Teilweise Produktdaten (für die Vorbelegung, wenn Nährwerte fehlen). Fehlende Werte sind null. */
+export function productPartial(p) {
+  const n = p?.nutriments ?? {};
+  const num = k => { const v = n[k] == null || n[k] === '' ? null : Number(n[k]); return Number.isFinite(v) && v >= 0 ? v : null; };
+  const kj = num('energy-kj_100g');
+  const unit = String(p?.product_quantity_unit || '').toLowerCase();
+  return {
+    name: String(p?.product_name_de || p?.product_name || '').trim(),
+    brand: String(p?.brands || '').trim(),
+    unit: ['ml', 'l', 'cl'].includes(unit) ? 'ml' : 'g',
+    basisAmount: 100,
+    macros: {
+      calories: num('energy-kcal_100g') ?? (kj != null ? kj / 4.184 : null),
+      protein: num('proteins_100g'), carbs: num('carbohydrates_100g'), fat: num('fat_100g'),
+    },
+    source: 'Open Food Facts · ODbL · unvollständig, bitte mit dem Etikett ergänzen',
+  };
+}
 export const MISSING_PRODUCT = 'Kein Produkt mit vollständigen Nährwerten gefunden. Bitte Werte vom Etikett manuell eingeben.';
 
 // ---------- Validierung / Backup ----------

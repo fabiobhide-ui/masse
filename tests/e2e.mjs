@@ -148,14 +148,63 @@ try {
   await page.waitForFunction(() => window.__masse.state.foodEntries.some(e => e.amount === 200));
   ok('Eintrag bearbeitet');
 
-  await page.click('.quick [data-act="scan"]');
-  await sheet().locator('input[name="code"]').fill('4006381333931');
-  await sheet().locator('form.row button').click();
+  // Barcode: Open Food Facts wird im Test simuliert
+  let offCalls = 0;
+  await page.route('https://world.openfoodfacts.org/api/v2/product/**', route => {
+    offCalls++;
+    const url = route.request().url();
+    const body = url.includes('4006381333931')
+      ? { status: 1, product: { code: '4006381333931', product_name_de: 'Testmüsli', brands: 'Marke X', product_quantity_unit: 'g', nutriments: { 'energy-kcal_100g': 380, proteins_100g: 10, carbohydrates_100g: 60, fat_100g: 8 } } }
+      : { status: 1, product: { code: '96385074', product_name: 'Skyr Natur', nutriments: { 'energy-kcal_100g': 63, proteins_100g: 11 } } };
+    route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
+  });
+  const scanCode = async code => {
+    await page.click('.quick [data-act="scan"]');
+    await sheet().locator('input[name="code"]').fill(code);
+    await sheet().locator('form.row button').click();
+  };
+  const closeAll = async () => { while (await page.locator('.sheet-wrap').count()) await page.locator('.sheet-wrap').last().locator('header [data-act="closeSheet"]').click(); };
+
+  await scanCode('4006381333931');
+  await page.locator('.dialog').waitFor();
+  await page.locator('.dialog [data-r="0"]').click();
   await sheet().locator('input[name="barcode"]').waitFor();
   if ((await sheet().locator('input[name="barcode"]').inputValue()) !== '4006381333931') throw new Error('Barcode nicht übernommen');
-  ok('Unbekannter Barcode (offline) öffnet Erfassung mit vorausgefülltem Code');
-  await page.click('.sheet-wrap >> nth=-1 >> [data-act="closeSheet"] >> nth=0');
-  while (await page.locator('.sheet-wrap').count()) await page.locator('.sheet-wrap').last().locator('header [data-act="closeSheet"]').click();
+  if (offCalls !== 0) throw new Error('Ohne Zustimmung wurde online gesucht');
+  ok('Unbekannter Barcode: App fragt nach Online-Suche; bei „Abbrechen“ manuelle Erfassung, keine Anfrage');
+  await closeAll();
+
+  await scanCode('4006381333931');
+  await confirm();
+  await sheet().locator('input[name="amount"]').waitFor();
+  await expectText(sheet().locator('.card.flat'), 'Testmüsli');
+  await sheet().locator('input[name="amount"]').fill('80');
+  await sheet().locator('button.primary').click();
+  await expectText(page.locator('#main'), 'Testmüsli');
+  ok('Online gefunden: Werte übernommen und 80 g eingetragen');
+
+  await scanCode('4006381333931');
+  await sheet().locator('input[name="amount"]').waitFor();
+  if (offCalls !== 1) throw new Error('Gespeichertes Produkt wurde erneut online gesucht');
+  ok('Zweiter Scan desselben Produkts: sofort aus dem eigenen Katalog');
+  await closeAll();
+
+  await sleep(4200);
+  await scanCode('96385074');
+  await sheet().locator('input[name="calories"]').waitFor();
+  const v = n => sheet().locator(`input[name="${n}"]`).inputValue();
+  if ((await v('name')) !== 'Skyr Natur' || (await v('calories')) !== '63' || (await v('protein')) !== '11' || (await v('carbs')) !== '' || (await v('barcode')) !== '96385074')
+    throw new Error('Teilweise Vorbelegung falsch');
+  await shot('09-teilweise');
+  await sheet().locator('input[name="carbs"]').fill('4');
+  await sheet().locator('input[name="fat"]').fill('0,2');
+  await sheet().locator('button.primary').click();
+  await sheet().locator('input[name="amount"]').waitFor();
+  const skyr = (await state()).foods.find(f => f.barcode === '96385074');
+  if (!skyr || skyr.macros.carbs !== 4 || !skyr.source.includes('Open Food Facts')) throw new Error('Ergänztes Produkt nicht gespeichert');
+  ok('Unvollständiges Produkt: vorhandene Werte vorbelegt, Rest ergänzt und gespeichert');
+  await closeAll();
+  await page.unroute('https://world.openfoodfacts.org/api/v2/product/**');
 
   await page.click('[data-act="foodDay"][data-d="-1"]');
   await expectText(page.locator('.daynav'), 'Gestern');
@@ -224,7 +273,7 @@ try {
   if (offState.weights.length !== 1) throw new Error('Offline: Daten fehlen');
   await page.click('[data-tab="home"]');
   await page.click('[data-act="quickShake"]');
-  await page.waitForFunction(() => window.__masse.state.foodEntries.length === 3);
+  await page.waitForFunction(() => window.__masse.state.foodEntries.length === 4);
   await context.setOffline(false);
   ok('Offline: App lädt aus dem Cache, Eingaben funktionieren');
 

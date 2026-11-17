@@ -469,18 +469,20 @@ function updateAmountPreview(form) {
 
 function foodEditor(food = null, prefill = {}) {
   const f = food ?? { ...C.newFood('', C.macros()), ...prefill };
+  const macroVal = k => ((food || prefill.macros) && Number.isFinite(f.macros?.[k]) ? inVal(+f.macros[k].toFixed(1)) : '');
   const ing = (f.ingredients ?? []).map(i => `${numFlex(i.amount)} ${i.unit} ${i.name}`).join('\n');
   openSheet({
     kind: 'foodEditor', title: food ? 'Lebensmittel bearbeiten' : 'Neues Lebensmittel', closeLabel: 'Abbrechen',
     body: () => `<form data-form="saveFood" class="form" data-id="${food?.id ?? ''}" data-then="${prefill.thenAdd ? '1' : ''}">
+      ${prefill.source ? `<input type="hidden" name="source" value="${esc(prefill.source)}"><p class="mini">Vorbelegt mit Daten von Open Food Facts – leere Felder bitte vom Etikett ergänzen.</p>` : ''}
       <label>Name<input name="name" value="${esc(f.name)}" required></label>
       <label>Marke (optional)<input name="brand" value="${esc(f.brand)}"></label>
       <div class="grid2"><label>Nährwerte je<input name="basisAmount" inputmode="decimal" value="${inVal(f.basisAmount)}" required></label>
       <label>Einheit<select name="unit">${['g', 'ml', 'Portion', 'Stück'].concat(['g', 'ml', 'Portion', 'Stück'].includes(f.unit) ? [] : [f.unit]).map(u => `<option ${u === f.unit ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></label></div>
-      <div class="grid2"><label>Kalorien (kcal)<input name="calories" inputmode="decimal" value="${food || prefill.macros ? inVal(+f.macros.calories.toFixed(1)) : ''}" required></label>
-      <label>Protein (g)<input name="protein" inputmode="decimal" value="${food || prefill.macros ? inVal(+f.macros.protein.toFixed(1)) : ''}" required></label></div>
-      <div class="grid2"><label>Kohlenhydrate (g)<input name="carbs" inputmode="decimal" value="${food || prefill.macros ? inVal(+f.macros.carbs.toFixed(1)) : ''}" required></label>
-      <label>Fett (g)<input name="fat" inputmode="decimal" value="${food || prefill.macros ? inVal(+f.macros.fat.toFixed(1)) : ''}" required></label></div>
+      <div class="grid2"><label>Kalorien (kcal)<input name="calories" inputmode="decimal" value="${macroVal('calories')}" required></label>
+      <label>Protein (g)<input name="protein" inputmode="decimal" value="${macroVal('protein')}" required></label></div>
+      <div class="grid2"><label>Kohlenhydrate (g)<input name="carbs" inputmode="decimal" value="${macroVal('carbs')}" required></label>
+      <label>Fett (g)<input name="fat" inputmode="decimal" value="${macroVal('fat')}" required></label></div>
       <label>Barcode (optional)<input name="barcode" inputmode="numeric" value="${esc(f.barcode ?? '')}"></label>
       <label class="check"><input type="checkbox" name="favorite" ${f.favorite ? 'checked' : ''}> Favorit</label>
       <label class="check"><input type="checkbox" name="recipe" ${f.recipe ? 'checked' : ''}> Rezept / Gericht</label>
@@ -519,19 +521,27 @@ async function handleBarcode(raw) {
   const code = C.normalizeBarcode(raw);
   const local = S.foods.find(f => f.barcode === code);
   if (local) return amountSheet(local);
-  if (S.profile.onlineFoodEnabled) {
-    toast('Suche bei Open Food Facts …');
-    try {
-      const food = await fetchProduct(code);
-      await commit(s => { s.foods.push(food); }, { render: false });
-      render();
-      return amountSheet(S.foods.find(f => f.id === food.id));
-    } catch (e) {
-      toast(e.message);
-    }
+  if (!S.profile.onlineFoodEnabled) {
+    const yes = await confirmBox('Dieses Produkt ist noch nicht gespeichert. Online bei Open Food Facts nachschlagen? Dabei wird nur der Barcode gesendet. Die Online-Suche bleibt danach eingeschaltet (abschaltbar unter „Mehr“).', 'Online suchen');
+    if (!yes) { foodEditor(null, { barcode: code, thenAdd: true }); return; }
+    await commit(s => { s.profile.onlineFoodEnabled = true; }, { render: false });
   }
-  foodEditor(null, { barcode: code, thenAdd: true });
-  if (!S.profile.onlineFoodEnabled) toast('Unbekannter Code – bitte Werte vom Etikett eingeben.');
+  toast('Suche bei Open Food Facts …');
+  let result;
+  try { result = await fetchProduct(code); } catch (e) {
+    foodEditor(null, { barcode: code, thenAdd: true });
+    toast(e.message);
+    return;
+  }
+  if (result.food) {
+    await commit(s => { s.foods.push(result.food); }, { render: false });
+    render(); refreshLibrary();
+    toast(`${result.food.name} gefunden`);
+    return amountSheet(S.foods.find(f => f.id === result.food.id));
+  }
+  // Produkt bekannt, aber Nährwerte unvollständig: Vorhandenes vorbelegen
+  foodEditor(null, { ...result.partial, barcode: code, thenAdd: true });
+  toast('Nicht alle Nährwerte vorhanden – bitte fehlende vom Etikett ergänzen.');
 }
 
 // ---------- Open Food Facts
@@ -553,9 +563,13 @@ async function offFetch(url) {
 async function fetchProduct(code) {
   if (Date.now() - ui.lastOnline.product < 4000) throw new C.FitnessError('Bitte einige Sekunden bis zum nächsten Produktabruf warten.');
   ui.lastOnline.product = Date.now();
-  const data = await offFetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=${OFF_FIELDS}`);
-  if (!data?.product) throw new C.FitnessError(C.MISSING_PRODUCT);
-  try { const f = C.productToFood(data.product); f.barcode = code; return f; } catch { throw new C.FitnessError(C.MISSING_PRODUCT); }
+  let data;
+  try { data = await offFetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=${OFF_FIELDS}`); } catch (e) {
+    if (e.message === C.MISSING_PRODUCT) throw new C.FitnessError('Dieses Produkt ist noch nicht bei Open Food Facts erfasst. Bitte Werte vom Etikett eingeben.');
+    throw e;
+  }
+  if (!data?.product) throw new C.FitnessError('Dieses Produkt ist noch nicht bei Open Food Facts erfasst. Bitte Werte vom Etikett eingeben.');
+  try { const f = C.productToFood(data.product); f.barcode = code; return { food: f }; } catch { return { partial: C.productPartial(data.product) }; }
 }
 async function onlineSearch(q) {
   if (!q.trim()) throw new C.FitnessError('Bitte zuerst einen Suchbegriff eingeben.');
@@ -1122,7 +1136,7 @@ const F = {
       const mm = l.match(/^([\d.,]+)\s*(\S+)\s+(.+)$/);
       return mm ? { id: C.uid(), name: mm[3], amount: parseNum(mm[1]), unit: mm[2] } : { id: C.uid(), name: l, amount: 0, unit: '' };
     });
-    const values = { name: String(fd.get('name')).trim(), brand: String(fd.get('brand') ?? '').trim(), basisAmount, unit: String(fd.get('unit')),
+    const values = { ...(fd.get('source') ? { source: String(fd.get('source')).replace(' · unvollständig, bitte mit dem Etikett ergänzen', ' · vom Nutzer ergänzt') } : {}), name: String(fd.get('name')).trim(), brand: String(fd.get('brand') ?? '').trim(), basisAmount, unit: String(fd.get('unit')),
       macros: m, barcode, favorite: fd.get('favorite') === 'on', recipe: fd.get('recipe') === 'on', ingredients };
     if (!values.name) throw new C.FitnessError('Bitte einen Namen eingeben.');
     const id = form.dataset.id;
@@ -1281,7 +1295,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------- Start
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 function migrate(st) {
   st = structuredClone(st);
   st.measurements ??= [];

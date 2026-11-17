@@ -162,3 +162,14 @@ test('CSV: Quoting und Formelschutz', () => {
   assert.equal(C.csvField('@x'), "'@x");
   assert.ok(C.csv([['a', 1]]).startsWith('﻿a;1'));
 });
+
+test('Open-Food-Facts: unvollständige Produkte werden teilweise vorbelegt', () => {
+  const p = C.productPartial({ product_name: 'Skyr', brands: 'Arla', product_quantity_unit: 'g',
+    nutriments: { 'energy-kcal_100g': 63, proteins_100g: 11, fat_100g: '' } });
+  assert.equal(p.name, 'Skyr'); assert.equal(p.brand, 'Arla');
+  assert.equal(p.macros.calories, 63); assert.equal(p.macros.protein, 11);
+  assert.equal(p.macros.carbs, null); assert.equal(p.macros.fat, null);
+  const kj = C.productPartial({ nutriments: { 'energy-kj_100g': 418.4 } });
+  close(kj.macros.calories, 100); assert.equal(kj.name, '');
+  assert.equal(C.productPartial({}).macros.protein, null);
+});
